@@ -144,9 +144,30 @@ HOSTILE_BODIES = {
 }
 
 
+def send_in_background(sock: socket.socket, data: bytes) -> threading.Thread:
+    """Send from another thread so the reader can drain the socket at the same time.
+
+    Needed for big frames: on macOS, socketpair() buffers only about 8 KB, so a
+    64 KB sendall() blocks until someone reads, and in a single thread nobody can.
+    """
+    writer = threading.Thread(target=sock.sendall, args=(data,), daemon=True)
+    writer.start()
+    return writer
+
+
+def test_big_frame_is_received_whole(pair):
+    """A frame larger than the OS socket buffer still arrives intact."""
+    a, b = pair
+    msg = {"type": "chat", "to": "bob", "text": "x" * 60_000}
+    writer = send_in_background(a, encode_frame(msg))
+    assert recv_msg(b) == msg
+    writer.join(timeout=2)
+
+
 @pytest.mark.parametrize("body", HOSTILE_BODIES.values(), ids=HOSTILE_BODIES.keys())
 def test_hostile_content_raises_bad_message(pair, body):
     a, b = pair
-    a.sendall(raw_frame(body))
+    writer = send_in_background(a, raw_frame(body))  # deep_nesting is ~64 KB
     with pytest.raises(BadMessage):
         recv_msg(b)
+    writer.join(timeout=2)
