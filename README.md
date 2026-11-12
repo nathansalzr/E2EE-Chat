@@ -52,6 +52,48 @@ source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 ```
 
+If PowerShell refuses to run `Activate.ps1` (script execution is disabled), skip activating and put `.venv\Scripts\` in front of each command instead, e.g. `.venv\Scripts\python -m pytest`.
+
+## Running the chat
+
+Open **three terminals** in the project folder, with the virtual environment active in each.
+
+**1. Start the server:**
+
+```bash
+python -m e2ee_chat.server
+```
+
+You should see `[server] listening on 127.0.0.1:5050`.
+
+**2. Start Alice:**
+
+```bash
+python -m e2ee_chat.client --user alice --peer bob
+```
+
+**3. Start Bob:**
+
+```bash
+python -m e2ee_chat.client --user bob --peer alice
+```
+
+Type a line in Alice's terminal and press Enter; it shows up in Bob's as `[alice] ...`. Type `/quit` (or press Ctrl+C) to leave, and press Ctrl+C in the server terminal to stop it.
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--host` | Server: address to listen on. Client: server address to connect to. | `127.0.0.1` |
+| `--port` | Port number | `5050` |
+| `--user` | Your username (1-20 letters, digits, `_` or `-`) | required |
+| `--peer` | Who your messages go to | required |
+| `--mode` | `plain` for now; `e2ee` arrives in UC-4 | `plain` |
+
+By default the server only accepts connections from the same computer. To chat between two laptops, see [`docs/two-machine-setup.md`](docs/two-machine-setup.md).
+
+**What the server prints:** who joined and left, and `alice -> bob (chat)` for each message. It never prints message text, but it *could* read it, and so could anyone in the middle. That's what UC-2 shows.
+
+The message format is in [`docs/protocol.md`](docs/protocol.md).
+
 ## Running the checks (same as CI)
 
 ```bash

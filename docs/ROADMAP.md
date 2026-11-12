@@ -137,7 +137,7 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
    - **The team signs off before anyone codes against it.**
 2. **T3 `protocol.py` (Crypto lead):** `send_msg(sock, dict)` and `recv_msg(sock) -> dict`, handling messages that arrive split across several TCP reads.
 3. **T4 `server.py` (Nathan):** accept many clients (one thread each), register usernames, relay `chat` messages to the named user, clean up on disconnect. The server never needs to read the message text.
-4. **T5 `client.py` (Attack lead):** host/port arguments, `--mode plain` (the default until encryption lands), username prompt, a send loop plus a receive thread, and `/quit`.
+4. **T5 `client.py` (Attack lead):** host/port arguments, `--user` and `--peer`, `--mode plain` (the default until encryption lands), a send loop plus a receive thread, and `/quit`.
 5. **T7 Error handling (Nathan):** server down, recipient offline, duplicate username, malformed JSON. Show a clear message and never crash.
 6. **T6 Two-machine test (Attack lead):** use a phone hotspot or our own router, and write down the firewall/IP steps for Windows and macOS. Fallback: two terminals on one laptop.
 7. **T8 README run steps (Docs lead):** someone who didn't write the code follows it and succeeds.
