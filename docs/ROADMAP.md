@@ -32,7 +32,38 @@ Tamper detection is a bonus moment: if the MITM flips one byte, the receiver rej
 
 ---
 
-## 2. Who owns what
+## 2. How we show each stage
+
+**One codebase, every stage behind a `--mode` switch.** We never delete the vulnerable version, so the live demo goes from "broken" to "fixed" with a restart, not a code change.
+
+| Demo step | Clients (Alice + Bob) | Attacker | What the class sees |
+|---|---|---|---|
+| 1. Plaintext, attack works | `client --mode plain` | `mitm --mode log` | Attacker pane and Wireshark show readable messages |
+| 2. Encrypted, attack fails | `client --mode e2ee` | `mitm --mode log` | Attacker pane shows only base64 gibberish |
+| 3. Tampering is caught | `client --mode e2ee` | `mitm --mode tamper` | Bob sees "message failed integrity check" |
+| 4. Key swap beats naive E2EE | `client --mode e2ee` (nobody checks) | `mitm --mode swap-keys` | Attacker reads the "encrypted" chat again |
+| 5. Fingerprints catch the swap | `client --mode e2ee`, then `/fingerprint` | `mitm --mode swap-keys` | Alice's and Bob's fingerprints don't match, so they `/abort` |
+
+**No downgrade (T66):** in `e2ee` mode the client **rejects any plaintext message**. Otherwise the MITM could strip the encryption and quietly push both sides back to plaintext, which is a downgrade attack.
+
+**Milestone tags (T67):** each stage gets a git tag as soon as it works from a fresh clone. `git checkout v0.2-attack` shows any earlier stage, and the tags give the report a timeline.
+
+| Tag | When | Shows |
+|---|---|---|
+| `v0.1-plaintext` | After T9 | Chat works |
+| `v0.2-attack` | After T17 | MITM reads it |
+| `v0.3-e2ee` | After T33 | Encryption + tamper detection |
+| `v1.0` | Code freeze, Nov 16 (T54) | Key swap + fingerprints, full demo |
+
+**Evidence as we go:**
+- Screenshots go in OneDrive `05_Evidence`, named `YYYY-MM-DD_UC#_what.png`, e.g. `2026-11-13_UC2_plaintext-intercept.png`.
+- **Milestone clips (T68):** a 20-second screen recording the first time each stage works. Together they become most of the backup video.
+
+**Demo layout:** four terminal panes (server, attacker, Alice, Bob) plus Wireshark. Keep the attacker pane big, because that's where the before/after shows.
+
+---
+
+## 3. Who owns what
 
 | Role | Person | Owns |
 |---|---|---|
@@ -45,7 +76,7 @@ Everyone writes their own report section and presents their own part.
 
 ---
 
-## 3. What blocks what
+## 4. What blocks what
 
 Start with anything that has no arrows coming into it. Everything else waits for the boxes before it.
 
@@ -69,8 +100,8 @@ flowchart LR
     T27 --> T28[T28 Encrypted chat]
     T25 --> T28
     T28 --> T29[T29 Attack re-run: ciphertext]
-    T28 --> T31[T31 mitm --tamper]
-    T25 --> T35[T35 mitm --swap-keys]
+    T28 --> T31[T31 mitm --mode tamper]
+    T25 --> T35[T35 mitm --mode swap-keys]
     T19 --> T20[T20 Fingerprint helper]
     T20 --> T34[T34 /fingerprint]
     T25 --> T34
@@ -86,7 +117,7 @@ flowchart LR
 
 ---
 
-## 4. Use cases: how to build each one
+## 5. Use cases: how to build each one
 
 Each use case lists its stories and tasks, the files involved, the steps, how we know it's done, and what evidence to save.
 Suggested commands and ports are placeholders until the protocol spec (T1) confirms them.
@@ -106,7 +137,7 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
    - **The team signs off before anyone codes against it.**
 2. **T3 `protocol.py` (Crypto lead):** `send_msg(sock, dict)` and `recv_msg(sock) -> dict`, handling messages that arrive split across several TCP reads.
 3. **T4 `server.py` (Nathan):** accept many clients (one thread each), register usernames, relay `chat` messages to the named user, clean up on disconnect. The server never needs to read the message text.
-4. **T5 `client.py` (Attack lead):** host/port arguments, username prompt, a send loop plus a receive thread, and `/quit`.
+4. **T5 `client.py` (Attack lead):** host/port arguments, `--mode plain` (the default until encryption lands), username prompt, a send loop plus a receive thread, and `/quit`.
 5. **T7 Error handling (Nathan):** server down, recipient offline, duplicate username, malformed JSON. Show a clear message and never crash.
 6. **T6 Two-machine test (Attack lead):** use a phone hotspot or our own router, and write down the firewall/IP steps for Windows and macOS. Fallback: two terminals on one laptop.
 7. **T8 README run steps (Docs lead):** someone who didn't write the code follows it and succeeds.
@@ -119,7 +150,9 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 
 **Tests:** `tests/test_protocol.py`, which checks that a message split across reads still arrives whole. Add a server/client test with two local sockets.
 
-**Evidence (T9):** a screenshot of the plaintext chat working, saved in `05_Evidence`.
+**Evidence (T9):** a screenshot of the plaintext chat working, saved in `05_Evidence`, plus the first milestone clip (T68).
+
+**Milestone:** tag `v0.1-plaintext` (T67).
 
 ---
 
@@ -136,7 +169,7 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 1. **T13 Threat model (Crypto lead):** who the attacker is, what they can see and change, and what's out of scope. This becomes a report section.
 2. **T12 MITM sketch (Attack lead):** one page on how `mitm.py` listens, forwards and logs. The team reviews it before coding.
 3. **T14 Forwarding (Attack lead):** listen on its own port and, for each client, open a connection to the real server. One thread per direction.
-4. **T15 Logging (Attack lead):** decode each frame and write the timestamp, direction, sender and text to `intercepted.log`, plus a live print to the attacker's terminal.
+4. **T15 `mitm --mode log` (Attack lead):** decode each frame and write the timestamp, direction, sender and text to `intercepted.log`, plus a live print to the attacker's terminal.
 5. **T16 README "Running the attack" (Docs lead):** start order, ports, where the log goes, and the ethics rule.
 6. **T17 Attack run + Wireshark (Attack lead):** capture the chat in Wireshark and show the message text in the packets.
 
@@ -145,7 +178,9 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 - [ ] `intercepted.log` shows the conversation in readable plaintext.
 - [ ] A Wireshark capture shows the message text.
 
-**Evidence (T17):** screenshots of the attacker terminal, `intercepted.log` and Wireshark, saved in `05_Evidence`.
+**Evidence (T17):** screenshots of the attacker terminal, `intercepted.log` and Wireshark, saved in `05_Evidence`, plus a milestone clip.
+
+**Milestone:** tag `v0.2-attack` (T67).
 
 ---
 
@@ -185,24 +220,28 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 
 **Goal:** the same attack from UC-2 now captures only ciphertext, and a tampered message is rejected. This is the "stop an attack" half.
 
-**Files:** `crypto_utils.py`, `client.py`, `mitm.py --tamper`
+**Files:** `crypto_utils.py`, `client.py`, `mitm.py --mode tamper`
 
 **Steps:**
 
 1. **T27 Encrypt/decrypt helpers (Crypto lead):** AES-256-GCM with a **fresh random 12-byte nonce for every message** (never reuse one) and base64 for transport.
-2. **T28 Encrypted chat (Attack lead):** the client sends and receives `encrypted` messages instead of `chat`.
-3. **T29 Attack re-run (Attack lead):** repeat UC-2 against the encrypted build. The log and Wireshark should show only base64 noise. Make a before/after side-by-side screenshot, which is our best slide.
-4. **T31 `mitm.py --tamper` (Attack lead):** flip one byte of the ciphertext before forwarding.
-5. **T32 Reject tampered messages (Attack lead):** catch `InvalidTag`, show "message failed integrity check" and drop the message.
+2. **T28 `client --mode e2ee` (Attack lead):** the client sends and receives `encrypted` messages instead of `chat`. `--mode plain` keeps working for demo step 1.
+3. **T66 No downgrade (Nathan):** in `e2ee` mode, reject any plaintext `chat` message and show "plaintext message rejected (possible downgrade attack)". Add a test for it.
+4. **T29 Attack re-run (Attack lead):** repeat UC-2 against the encrypted build. The log and Wireshark should show only base64 noise. Make a before/after side-by-side screenshot, which is our best slide.
+5. **T31 `mitm --mode tamper` (Attack lead):** flip one byte of the ciphertext before forwarding.
+6. **T32 Reject tampered messages (Attack lead):** catch `InvalidTag`, show "message failed integrity check" and drop the message.
 
 **Done when:**
 - [ ] The recipient sees the exact original text.
 - [ ] `intercepted.log` and Wireshark contain no readable words.
 - [ ] A tampered message is rejected; untouched messages still arrive.
+- [ ] An `e2ee` client rejects a plaintext message (no downgrade).
 
-**Tests:** encrypt → decrypt round trip, a flipped byte raises `InvalidTag`, and two encryptions of the same text never use the same nonce.
+**Tests:** encrypt → decrypt round trip, a flipped byte raises `InvalidTag`, two encryptions of the same text never use the same nonce, and an `e2ee` client rejects plaintext.
 
-**Evidence (T29, T33):** a before/after side-by-side and a screenshot of the rejected tampered message.
+**Evidence (T29, T33):** a before/after side-by-side and a screenshot of the rejected tampered message, plus milestone clips.
+
+**Milestone:** tag `v0.3-e2ee` (T67).
 
 ---
 
@@ -214,16 +253,16 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 
 **The fix:** both users compare a short fingerprint of the keys over a separate channel (in person or by phone), like Signal's safety numbers. If the MITM swapped keys, the fingerprints won't match.
 
-**Files:** `client.py`, `mitm.py --swap-keys`
+**Files:** `client.py`, `mitm.py --mode swap-keys`
 
 **Steps:**
 
-1. **T35 `mitm.py --swap-keys` (Attack lead):** replace each side's public key with the attacker's and decrypt both directions. Show it reading the "encrypted" chat.
+1. **T35 `mitm --mode swap-keys` (Attack lead):** replace each side's public key with the attacker's and decrypt both directions. Show it reading the "encrypted" chat.
 2. **T34 `/fingerprint` (Attack lead):** show our own fingerprint and the peer's.
 3. **T36 `/abort` (Crypto lead):** end the session when the fingerprints don't match.
 
 **Done when:**
-- [ ] With `--swap-keys` and no fingerprint check, the attacker reads the chat.
+- [ ] With `--mode swap-keys` and no fingerprint check, the attacker reads the chat.
 - [ ] With the check, A's and B's fingerprints don't match, and `/abort` ends the session.
 
 **Evidence (T37):** a mismatched-fingerprint screenshot and the key-swap log.
@@ -250,8 +289,9 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 
 - **T51 Book the demo (Nathan, this week):** an office-hours slot, not class time, with all four of us present.
 - **T48 Slides (Docs lead):** follow the demo story in section 1, with one section per member.
-- **T49 Script + rehearsal (Nathan):** 10-15 minutes, plus 5 minutes for questions. Everyone speaks.
-- **T50 Backup video (Docs lead):** record the full demo in case the live one breaks.
+- **T49 Script + rehearsal (Nathan):** follow the 5-step table in section 2. 10-15 minutes, plus 5 minutes for questions. Everyone speaks.
+- **T68 Milestone clips (Docs lead):** a 20-second recording the first time each stage works, collected from whoever ran it.
+- **T50 Backup video (Docs lead):** stitch the milestone clips together and record anything missing, in case the live demo breaks.
 
 **Done when:**
 - [ ] The report is 5+ pages and has a contribution page that everyone has confirmed.
@@ -264,6 +304,7 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 |---|---|---|---|
 | T52 | Team charter, meeting-notes template, contribution log, decision log in OneDrive | Docs lead | Day 1 |
 | T53 | Architecture diagram (client - server - client, then with the MITM) for `02_Design`, the report and the slides | Docs lead | After T1 |
+| T67 | Milestone tags `v0.1-plaintext`, `v0.2-attack`, `v0.3-e2ee` (run from a fresh clone first) | Nathan | As each stage lands |
 | T54 | **Code freeze:** merge everything, run the full demo from a fresh clone, tag `v1.0` | Nathan | Mon Nov 16 |
 | T55 | Check every US-1 to US-7 acceptance criterion and record pass/fail (by someone who didn't write that code) | Crypto lead | After T54 |
 | T56 | Code-freeze review: update the board, log scope changes, confirm write-up owners | Nathan | Mon Nov 16 |
@@ -274,7 +315,7 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 
 ---
 
-## 5. How to work a task
+## 6. How to work a task
 
 1. **Pick your task** on the board and set its status to **In Progress**.
 2. **Branch from the latest `main`:**
@@ -305,7 +346,7 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 
 ---
 
-## 6. Definition of Done and rules
+## 7. Definition of Done and rules
 
 A task is **Done** when:
 - [ ] The code runs locally, and its test passes in CI.

@@ -66,7 +66,8 @@ Run `ruff format .` to fix formatting automatically.
 
 - **Branch per task:** `feat/<story>-<short-desc>` (e.g. `feat/us2-mitm-logger`), `chore/<desc>` for setup and maintenance.
 - **Every change reaches `main` through a pull request** with green CI and one teammate's review. Nobody merges their own PR.
-- **Tags:** `v1.0` at the Nov 16 code freeze.
+- **Tags:** `v0.1-plaintext`, `v0.2-attack` and `v0.3-e2ee` as each stage works, then `v1.0` at the Nov 16 code freeze.
+- **Every stage stays in the code** behind `--mode` (client: `plain` / `e2ee`; mitm: `log` / `tamper` / `swap-keys`), so the demo can show the vulnerable and fixed versions side by side.
 - **Backlog and board:** `E2EEChat_Sprint1_ProductBacklog.xlsx` in our shared OneDrive folder.
 
 ## Ethics rule
