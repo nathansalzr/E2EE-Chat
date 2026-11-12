@@ -10,6 +10,8 @@ CECS 378 semester project, CSULB, Fall 2026. Due Nov 20, 2026.
 
 **Build plan:** [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
+**What we did and saw, per use case:** [`docs/development-log.md`](docs/development-log.md)
+
 ## Stack
 
 | Layer | Tech |
