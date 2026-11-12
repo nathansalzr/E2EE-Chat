@@ -1,0 +1,4 @@
+# Everything above plus the tools CI uses (tests + lint)
+-r requirements.txt
+pytest==9.2.0
+ruff==0.17.3

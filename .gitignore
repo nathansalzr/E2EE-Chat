@@ -1,0 +1,32 @@
+# Private keys and key material: NEVER committed (NFR-4)
+*.pem
+*.key
+keys/
+
+# Attack output: captured traffic stays on the attacker's machine
+intercepted.log
+*.pcap
+*.pcapng
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# logs / OS / editor junk
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
