@@ -112,7 +112,11 @@ def test_main_sends_typed_lines_to_peer(server, monkeypatch, tmp_path):
     # UC-3: both ends run the handshake, so bob is a secure client too.
     bob_inbox: queue.Queue = queue.Queue()
     bob = ChatClient(
-        "127.0.0.1", server.port, "bob", on_message=bob_inbox.put, peer="alice",
+        "127.0.0.1",
+        server.port,
+        "bob",
+        on_message=bob_inbox.put,
+        peer="alice",
         keys_dir=str(tmp_path),
     )
     bob.connect()
@@ -284,7 +288,11 @@ def test_reconnect_with_same_key_both_converge(secure, server, tmp_path):
 
     bob2_inbox: queue.Queue = queue.Queue()
     bob2 = ChatClient(
-        "127.0.0.1", server.port, "bob", on_message=bob2_inbox.put, peer="alice",
+        "127.0.0.1",
+        server.port,
+        "bob",
+        on_message=bob2_inbox.put,
+        peer="alice",
         keys_dir=str(tmp_path),
     )
     bob2.connect()
@@ -324,7 +332,11 @@ def test_main_exits_cleanly_on_corrupt_key_file(server, monkeypatch, tmp_path, c
 def test_main_ctrl_c_during_handshake_exits_cleanly(server, monkeypatch, tmp_path, capsys):
     # Finding 5: Ctrl+C while waiting for the handshake exits cleanly (no traceback).
     bob = ChatClient(
-        "127.0.0.1", server.port, "bob", on_message=lambda m: None, peer="alice",
+        "127.0.0.1",
+        server.port,
+        "bob",
+        on_message=lambda m: None,
+        peer="alice",
         keys_dir=str(tmp_path),
     )
     bob.connect()
