@@ -77,8 +77,9 @@ def test_private_key_never_appears_in_mitm_log(tmp_path):
     listener = _start_mitm(mitm_port, server_port, log_file)
     _wait_port(mitm_port)
 
-    alice = ChatClient("127.0.0.1", mitm_port, "alice", lambda m: None, peer="bob", keys_dir=str(tmp_path))
-    bob = ChatClient("127.0.0.1", mitm_port, "bob", lambda m: None, peer="alice", keys_dir=str(tmp_path))
+    kd = str(tmp_path)
+    alice = ChatClient("127.0.0.1", mitm_port, "alice", lambda m: None, peer="bob", keys_dir=kd)
+    bob = ChatClient("127.0.0.1", mitm_port, "bob", lambda m: None, peer="alice", keys_dir=kd)
     alice.connect()
     bob.connect()
     assert alice.session_ready.wait(3) and bob.session_ready.wait(3)
