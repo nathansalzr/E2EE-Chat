@@ -157,18 +157,18 @@ _TBD_
 
 ---
 
-## UC-5: Verify a contact's key fingerprint
+## UC-5: Verify a contact's key and catch key changes
 
 **Date:** _TBD_ · **Done by:** _TBD_ · **Tag:** `v1.0` _(code freeze, Nov 16)_
 
 ### Goal
-Show that encryption alone isn't enough when the attacker swaps public keys, then show the fingerprint check catching it.
+Show that encryption alone isn't enough when the attacker swaps public keys, then show the defense: a one-time fingerprint check that anchors first contact, **plus trust-on-first-use (TOFU)** that pins the peer's key and alarms if it ever changes. Together: encrypted messages **and** a continuous "same trusted key?" alarm.
 
 ### How we ran it _(planned)_
-UC-2's four windows, with the attacker on `--mode swap-keys`. First nobody checks, then both users type `/fingerprint` and compare.
+UC-2's four windows, with the attacker on `--mode swap-keys`. First nobody checks (attacker reads the "encrypted" chat); then both users `/fingerprint` and compare out-of-band (mismatch → `/abort`). Finally, pin a key, reconnect with a changed key, and show the TOFU "key changed — re-verify" alarm firing on its own.
 
 ### What we saw
-_TBD: did the attacker read the "encrypted" chat? Did the fingerprints differ?_
+_TBD: did the attacker read the "encrypted" chat? Did the fingerprints differ? Did the TOFU alarm fire on a changed key and stay silent on an unchanged one?_
 
 ### What didn't work
 _TBD_
@@ -176,6 +176,7 @@ _TBD_
 ### Evidence
 - [ ] Attacker reading the chat during the key swap
 - [ ] Mismatched fingerprints screenshot
+- [ ] TOFU "key changed" alarm screenshot
 - [ ] Clips
 
 ---

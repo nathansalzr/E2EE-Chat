@@ -245,27 +245,31 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 
 ---
 
-### UC-5: Verify a contact's key fingerprint (US-7)
+### UC-5: Verify a contact's key and catch key changes (US-7)
 
 **Goal:** show that encryption alone isn't enough, then show the fix. This is our strongest Q&A and report section.
 
 **The attack:** the MITM intercepts both public keys and hands each side **its own** key instead. It now shares a secret with each side, so it can decrypt, read and re-encrypt everything.
 
-**The fix:** both users compare a short fingerprint of the keys over a separate channel (in person or by phone), like Signal's safety numbers. If the MITM swapped keys, the fingerprints won't match.
+**The fix (two layers):**
+- **Fingerprint check — anchors the *first* contact.** Both users compare a short fingerprint of the keys over a separate channel (in person or by phone), like Signal's safety numbers. If the MITM swapped keys, the fingerprints won't match.
+- **Trust-on-first-use (TOFU) — guards *every session after*.** The client pins the peer's public key the first time it sees it and, on every later session, raises an alarm if that key ever changes — the SSH "host key changed" pattern. This turns the one-time check into a continuous monitor: a MITM that arrives *after* first contact (a user roams to a hostile network), or a benign reinstall, is flagged automatically and the user re-verifies. TOFU can't secure the first contact by itself, so the fingerprint check anchors it; together they give encrypted messages **plus** an ongoing "is this still the same trusted key?" alarm.
 
-**Files:** `client.py`, `mitm.py --mode swap-keys`
+**Files:** `client.py`, `crypto_utils.py` (key pinning), `mitm.py --mode swap-keys`
 
 **Steps:**
 
 1. **T35 `mitm --mode swap-keys` (Attack lead):** replace each side's public key with the attacker's and decrypt both directions. Show it reading the "encrypted" chat.
 2. **T34 `/fingerprint` (Attack lead):** show our own fingerprint and the peer's.
 3. **T36 `/abort` (Crypto lead):** end the session when the fingerprints don't match.
+4. **T69 Trust-on-first-use (Crypto lead):** pin each peer's public key on first contact (e.g. `known_peers/<peer>.key`), compare it on every reconnect, and on a change warn clearly and require re-verification before continuing.
 
 **Done when:**
 - [ ] With `--mode swap-keys` and no fingerprint check, the attacker reads the chat.
 - [ ] With the check, A's and B's fingerprints don't match, and `/abort` ends the session.
+- [ ] A peer whose key changes between sessions triggers a clear "key changed — re-verify" warning (TOFU), and a run where the key is unchanged stays silent.
 
-**Evidence (T37):** a mismatched-fingerprint screenshot and the key-swap log.
+**Evidence (T37):** a mismatched-fingerprint screenshot, a "key changed" alarm screenshot, and the key-swap log.
 
 ---
 
