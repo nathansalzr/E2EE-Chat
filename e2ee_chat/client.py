@@ -22,10 +22,13 @@ from e2ee_chat.protocol import (
     recv_msg,
     send_msg,
     encrypt_text,
-    decrypt
+    decrypt_text
 )
 
 CONNECT_TIMEOUT_SECONDS = 5
+
+### temp key generation for testing
+TEST_KEY = b'\x05\xa5\xd8\xe8q\xda\xb28\x08\x9a\x83\x12\xd2}\xcb:S\xab6p;H\xaf\x94\ry\xc1\xb0&7q6'
 
 
 class RegistrationError(Exception):
@@ -84,9 +87,7 @@ class ChatClient:
 
     def send_chat(self, to: str, text: str) -> None:
         """Send one chat message. Raises OSError if the connection is gone."""
-        ### temp key generation for testing
-        test_key = AESGCM.generate_key(bit_length=256)
-        send_msg(self._sock, {"type": "chat", "to": to, "text": encrypt_text(text, test_key)})
+        send_msg(self._sock, {"type": "chat", "to": to, "text": encrypt_text(text, TEST_KEY)})
 
     def close(self) -> None:
         """Hang up. Safe to call more than once."""
@@ -135,7 +136,7 @@ def format_message(msg: dict) -> str:
     kind = msg.get("type")
     clean = sanitize_for_terminal
     if kind == "chat":
-        return f"[{clean(msg.get('from'))}] {clean(msg.get('text'))}"
+        return f"[{clean(msg.get('from'))}] {clean(decrypt_text((msg.get('text')), TEST_KEY))}"
     if kind == "error":
         return f"! {clean(msg.get('code'))}: {clean(msg.get('message'))}"
     if kind == "disconnected":

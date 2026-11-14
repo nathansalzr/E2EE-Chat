@@ -14,6 +14,7 @@ import struct
 import base64
 import os
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM 
+from cryptography.exceptions import InvalidTag
 
 DEFAULT_PORT = 5050  # not 5000: macOS uses that port for AirPlay
 MAX_FRAME = 65_536  # biggest body we accept, so a bad length can't eat all memory
@@ -145,12 +146,15 @@ def recv_msg(sock: socket.socket) -> dict | None:
         return None
     return decode_body(body)
 
-def decrypt(payload: str, key: bytes) -> str:
+def decrypt_text(payload: str, key: bytes) -> str:
     raw_payload = base64.b64decode(payload)
     nonce = raw_payload[:12]
     ciphertext_with_tag = raw_payload[12:]
     aesgcm = AESGCM(key)
-    plaintext_bytes = aesgcm.decrypt(
-        nonce, ciphertext_with_tag, associated_data=None
-    )
+    try:
+        plaintext_bytes = aesgcm.decrypt(
+                nonce, ciphertext_with_tag, associated_data=None
+            )
+    except InvalidTag:
+        print("Decryption failed: The message was altered or the key is wrong.")
     return plaintext_bytes.decode("utf-8")
