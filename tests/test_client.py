@@ -247,7 +247,7 @@ def test_duplicate_pubkey_is_ignored(secure):
     bob, _ = secure("bob", "alice")
     assert alice.session_ready.wait(2)
     established = alice.session_key
-    alice._handle_pubkey({"type": "pubkey", "key": alice.peer_public})  # same key again
+    alice._handle_pubkey({"type": "pubkey", "from": "bob", "key": alice.peer_public})  # same key
     assert alice.session_key is established  # not re-derived
 
 
@@ -257,15 +257,51 @@ def test_reconnect_with_new_key_rederives(secure, tmp_path):
     assert alice.session_ready.wait(2)
     first = alice.session_key
     new_peer_key = public_key_b64(load_or_create_keypair("bob_v2", keys_dir=str(tmp_path)))
-    alice._handle_pubkey({"type": "pubkey", "key": new_peer_key})
+    alice._handle_pubkey({"type": "pubkey", "from": "bob", "key": new_peer_key})
     assert alice.session_ready.is_set()
     assert alice.session_key != first  # re-derived on the changed key
 
 
 def test_malformed_pubkey_does_not_crash_client(secure, tmp_path):
     alice, _ = secure("alice", "bob")  # not ready (bob offline)
-    alice._handle_pubkey({"type": "pubkey", "key": "!!!not-valid-base64!!!"})
+    alice._handle_pubkey({"type": "pubkey", "from": "bob", "key": "!!!not-valid-base64!!!"})
     assert not alice.session_ready.is_set()  # survived, still not ready
     good = public_key_b64(load_or_create_keypair("bob", keys_dir=str(tmp_path)))
-    alice._handle_pubkey({"type": "pubkey", "key": good})
+    alice._handle_pubkey({"type": "pubkey", "from": "bob", "key": good})
     assert alice.session_ready.is_set()  # a good key afterwards still works
+
+
+def test_reconnect_with_same_key_both_converge(secure, server, tmp_path):
+    # Finding 1: a client reconnecting with its SAME persisted key must converge.
+    alice, _ = secure("alice", "bob")
+    bob, _ = secure("bob", "alice")
+    assert alice.session_ready.wait(2) and bob.session_ready.wait(2)
+
+    bob.close()
+    deadline = time.time() + 2
+    while "bob" in server.online_users() and time.time() < deadline:
+        time.sleep(0.02)
+
+    bob2_inbox: queue.Queue = queue.Queue()
+    bob2 = ChatClient(
+        "127.0.0.1", server.port, "bob", on_message=bob2_inbox.put, peer="alice",
+        keys_dir=str(tmp_path),
+    )
+    bob2.connect()
+    try:
+        assert bob2.session_ready.wait(2)  # reconnecting side must establish
+        assert bob2.session_key == alice.session_key
+    finally:
+        bob2.close()
+
+
+def test_pubkey_from_a_stranger_is_ignored(secure):
+    # Finding 2: a third client must not be able to overwrite an established session.
+    alice, _ = secure("alice", "bob")
+    bob, _ = secure("bob", "alice")
+    assert alice.session_ready.wait(2) and bob.session_ready.wait(2)
+    established = alice.session_key
+
+    secure("carol", "alice")  # carol tries to hand alice a key
+    time.sleep(0.3)
+    assert alice.session_key == established  # unchanged: alice only trusts bob

@@ -30,7 +30,7 @@ Give Alice and Bob a **shared secret key that the server and the MITM cannot com
 ## Approaches considered (the handshake)
 Either client may connect first, so "who sends their public key when" is the real design fork.
 
-1. **Symmetric clients — CHOSEN.** Each client sends its public key to its peer on connect, and replies with its own key **whenever it receives a new or changed peer key**. Converges no matter who connects first, tolerates the peer being offline at first (the later joiner's send triggers the exchange), survives a peer reconnecting with a different key, and needs **zero server changes**. Trade-off: one or two redundant `pubkey` messages; dedup **on the peer's key value** so it can't ping-pong.
+1. **Symmetric clients — CHOSEN.** Each client *announces* its public key on connect and *replies* once to a peer's announcement (an added `reply` flag on the `pubkey` message tells the two apart; the server relays it blindly). Converges no matter who connects first, tolerates the peer being offline at first, and survives a peer reconnecting with its same persisted key — all with **zero server changes**. Trade-off: one or two extra `pubkey` messages; a reply is terminal so it can't ping-pong, and only the configured peer's key is accepted.
 2. **Server announces presence.** Server notifies a client when its peer is online, then they exchange. Cleaner ordering but requires a new server message and breaks the "UC-3 only touches the clients" boundary. Rejected.
 3. **Lowest-username initiates.** Deterministic initiator, but still needs presence to know when to start, so it collapses into approach 2's problem. Rejected.
 
@@ -53,15 +53,18 @@ A small, well-tested module. No sockets, no I/O beyond the key file — easy to 
 - The private key is only ever loaded locally and used in ECDH. It is never put in a message. (T21 verifies this against `intercepted.log`.)
 
 ### Handshake in `client.py` (approach 1)
-State per client, **all guarded by one lock** — the initial send runs on the main thread while replies and derivation run on the receive thread, and they share this state: `my_private`, `peer_public` (None until received), `session_key` (None until derived).
+State per client, guarded by locks — the announce runs on the main thread while replies and derivation run on the receive thread: `my_private`, `peer_public` (None until received), `session_key` (None until derived). A **send lock** serializes every socket write (both threads write the one socket); an **hs lock** guards the handshake state.
 
-1. On connect + register: load/create keypair, send `{"type":"pubkey","to":<peer>,"key":<my pub b64>}`. If the peer is offline the server returns `user_offline` **and drops the message** (it does not queue it) — that's fine: we are online by the time the later-joining peer sends, so their send reaches us and triggers our reply.
-2. On receiving a `pubkey` from the peer with key `K`:
-   - **If `K` equals the `peer_public` we already hold → ignore it.** This is the dedup that stops the ping-pong (both sides would otherwise keep replying to each other's replies).
-   - **Otherwise (first key, or the peer reconnected with a new one) → store `peer_public = K`, reply with our own `pubkey`, derive `session_key`, print the debug hash.** Replying on every *new* key (not gating on whether we've sent before) is what guarantees the later joiner gets our key in either connect order; re-deriving on a *changed* key keeps both sides converged after a restart.
-3. **Block chat until `session_key` is set.** Typed lines before that print `setting up secure session…` (or queue one line); once derived, print `secure session ready` and allow chat. (US-4 AC1: no chat before the handshake finishes.) A `user_offline` error that arrives while the session is still being set up is unambiguously about our `pubkey` send, so it needs no special distinguishing from a chat error.
+The `pubkey` message carries a boolean **`reply`** so a client can tell an *announcement* apart from a *reply*. The server relays the field blindly (no server change).
 
-**Why this converges (the invariant):** a client replies **exactly when the peer key it sees is new to it**, and ignores exact repeats. So every honest exchange settles after at most two `pubkey` messages per side, with no infinite loop, regardless of who connected first or whether someone reconnected.
+1. On connect + register: load/create keypair, send an **announcement** `{"type":"pubkey","to":<peer>,"key":<my pub b64>,"reply":false}`. If the peer is offline the server returns `user_offline` and drops it — fine: we're online when the later-joining peer announces, so their send reaches us.
+2. On receiving a `pubkey`:
+   - **Ignore it unless its server-stamped `from` is our configured peer.** (Stops a third client from overwriting our session and making the two honest clients hold different keys.)
+   - If the key **changed** (first contact, or the peer reconnected with a different key) → derive `session_key`, store it, mark ready, emit the debug hash. An unchanged key is not re-derived.
+   - **If it was an announcement (`reply` falsey) → reply once with our key (`reply:true`); if it was a reply → send nothing.** Answering every announcement (even for an unchanged key) is what lets a peer reconnecting with its *same persisted key* still receive ours; replies being terminal is what stops the ping-pong.
+3. **Block chat until `session_key` is set.** `send_chat` raises `SessionNotReady` until then; `main()` waits for the session before accepting input. (US-4 AC1: no chat before the handshake finishes.)
+
+**Why this converges (the invariant):** an announcement always draws exactly one reply, and a reply draws none. So every honest exchange — either connect order, first contact or a same-key reconnect — settles in a bounded number of messages with no loop, and only our configured peer can set up our key.
 
 ### Debug visibility (T26)
 When `--debug` (or always in UC-3), each client prints a short hash of its session key, e.g. `session key: 9f3a…` (first bytes of SHA-256 of the key — **never the key itself**). Matching hashes on both clients = US-4 AC3 evidence for a screenshot.

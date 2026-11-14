@@ -76,6 +76,7 @@ class ChatClient:
         self.session_key: bytes | None = None
         self.peer_public: str | None = None
         self._hs_lock = threading.Lock()
+        self._send_lock = threading.Lock()  # one frame at a time on the shared socket
         if peer is not None:
             self._my_private = load_or_create_keypair(username, keys_dir)
             self._my_public_b64 = public_key_b64(self._my_private)
@@ -115,10 +116,22 @@ class ChatClient:
         # because the later-joining peer's own send reaches us and triggers the
         # exchange. (US-4 AC1)
         if self.peer is not None:
-            try:
-                send_msg(sock, {"type": "pubkey", "to": self.peer, "key": self._my_public_b64})
-            except OSError:
-                pass
+            self._send_pubkey(reply=False)  # announce our key to the peer
+
+    def _send(self, msg: dict) -> None:
+        """Send one frame, serialized so the receive thread (handshake replies)
+        and the main thread (chat) can't interleave bytes of two frames."""
+        with self._send_lock:
+            send_msg(self._sock, msg)
+
+    def _send_pubkey(self, reply: bool) -> None:
+        """Send our public key as an announcement (reply=False) or a reply (True)."""
+        try:
+            self._send(
+                {"type": "pubkey", "to": self.peer, "key": self._my_public_b64, "reply": reply}
+            )
+        except OSError:
+            pass  # peer offline etc.; the later-joining side re-triggers the exchange
 
     def send_chat(self, to: str, text: str) -> None:
         """Send one chat message. Raises OSError if the connection is gone.
@@ -128,35 +141,41 @@ class ChatClient:
         """
         if self.peer is not None and not self.session_ready.is_set():
             raise SessionNotReady("secure session not established yet")
-        send_msg(self._sock, {"type": "chat", "to": to, "text": text})
+        self._send({"type": "chat", "to": to, "text": text})
 
     def _handle_pubkey(self, msg: dict) -> None:
-        """Handle a peer's public key: dedup, derive the session key, reply.
+        """Process a public key from our peer and converge on a session key.
 
-        The dedup is on the key VALUE: an exact repeat is ignored (so the two
-        clients can't ping-pong replies), while a new or changed key is stored,
-        replied to, and (re-)derived (so the later joiner and a reconnecting
-        peer both converge). A malformed key is swallowed, leaving the session
-        not-ready rather than killing the receive thread. (Design: Handshake)
+        An *announcement* (sent on connect) always gets a reply, so a peer that
+        reconnects with its same persisted key still receives ours; a *reply* is
+        terminal, so the exchange can't ping-pong. We trust only a pubkey whose
+        server-stamped ``from`` is our configured peer, so a third client can't
+        overwrite the session. A changed key is re-derived; a malformed key is
+        swallowed, leaving the session not-ready. (Design: Handshake)
         """
+        if msg.get("from") != self.peer:
+            return  # only our configured peer sets up our session
         key = msg.get("key")
+        if not isinstance(key, str):
+            return
+        is_reply = bool(msg.get("reply"))
         with self._hs_lock:
-            if not isinstance(key, str) or key == self.peer_public:
-                return  # not a key, or one we already hold -> ignore
-            try:
-                session = derive_session_key(self._my_private, key)
-            except Exception:  # noqa: BLE001 - any bad key stays not-ready, never crashes
-                return
-            self.peer_public = key
-            self.session_key = session
-            self.session_ready.set()
-        # Reply with our key so the peer can derive too (do socket I/O off the lock).
-        try:
-            send_msg(self._sock, {"type": "pubkey", "to": self.peer, "key": self._my_public_b64})
-        except OSError:
-            pass
-        key_hash = hashlib.sha256(session).hexdigest()[:8]
-        self.on_message({"type": "secure_session", "key_hash": key_hash})
+            changed = key != self.peer_public
+            if changed:
+                try:
+                    session = derive_session_key(self._my_private, key)
+                except Exception:  # noqa: BLE001 - a bad key stays not-ready, never crashes
+                    return
+                self.peer_public = key
+                self.session_key = session
+                self.session_ready.set()
+            key_hash = (
+                hashlib.sha256(self.session_key).hexdigest()[:8] if self.session_key else None
+            )
+        if not is_reply:
+            self._send_pubkey(reply=True)  # answer an announcement (even on reconnect)
+        if changed:
+            self.on_message({"type": "secure_session", "key_hash": key_hash})
 
     def close(self) -> None:
         """Hang up. Safe to call more than once."""
