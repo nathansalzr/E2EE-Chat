@@ -9,7 +9,12 @@ import hashlib
 import os
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 _RAW = serialization.Encoding.Raw
 _RAW_PRIV = serialization.PrivateFormat.Raw
@@ -49,3 +54,26 @@ def fingerprint(public_key_b64_str: str) -> str:
     """
     digest = hashlib.sha256(base64.b64decode(public_key_b64_str)).hexdigest().upper()
     return " ".join(digest[i : i + 4] for i in range(0, len(digest), 4))
+
+
+# Both clients MUST use these identical parameters, or they derive different
+# keys and every encrypted message in UC-4 fails to decrypt.
+_HKDF_SALT = None
+_HKDF_INFO = b"e2ee-chat v1 session key"
+
+
+def derive_session_key(my_private_key: X25519PrivateKey, peer_public_b64: str) -> bytes:
+    """Agree a shared 32-byte AES-256 key with the peer.
+
+    X25519 ECDH produces a shared secret from our private key and the peer's
+    public key (the same secret on both sides); HKDF-SHA256 turns it into a
+    uniform 256-bit key. The private key never leaves this function.
+    """
+    peer_public = X25519PublicKey.from_public_bytes(base64.b64decode(peer_public_b64))
+    shared_secret = my_private_key.exchange(peer_public)
+    return HKDF(
+        algorithm=SHA256(),
+        length=32,
+        salt=_HKDF_SALT,
+        info=_HKDF_INFO,
+    ).derive(shared_secret)
