@@ -4,7 +4,7 @@ A terminal chat app built three ways to show one security story:
 
 1. **Plaintext chat**: two clients talk through a relay server.
 2. **The attack**: a man-in-the-middle (`mitm.py`) sits between the clients and the server and reads every message. A Wireshark capture shows the same text in the packets.
-3. **The defense**: end-to-end encryption (X25519 key exchange + AES-256-GCM). The same attack now captures only ciphertext, tampered messages are rejected, and fingerprint checks catch a MITM that swaps public keys.
+3. **The defense**: end-to-end encryption (X25519 key exchange + AES-256-GCM). The same attack now captures only ciphertext, tampered messages are rejected, and a fingerprint check plus **trust-on-first-use key pinning** catch a MITM that swaps public keys — the app pins a contact's key on first use and raises an alarm if it ever changes.
 
 CECS 378 semester project, CSULB, Fall 2026. Due Nov 20, 2026.
 
@@ -171,6 +171,7 @@ The attack runs only against our own app on our own machines (localhost, a phone
 - **X25519 instead of RSA:** each side combines its private key with the other's public key and both get the same secret, which never crosses the network. It's modern (Signal uses it), fast, and only a few lines with the `cryptography` library.
 - **AES-256-GCM for messages:** it encrypts and adds an authentication tag, so a flipped byte is detected and rejected. That covers confidentiality and integrity in one primitive.
 - **Fingerprint verification is required:** without it, our own MITM can swap in its public keys and read the "encrypted" chat. Comparing a short key hash out of band is the same idea as Signal's safety numbers and HTTPS certificates.
+- **Trust-on-first-use (TOFU), on top of the fingerprint:** the client pins a contact's public key the first time it sees it and warns if that key ever changes — the SSH "host key changed" pattern. This turns the one-time fingerprint check into a continuous alarm: a MITM that appears *after* first contact (you moved to a hostile network) is flagged automatically, as is a benign change like a reinstall, which the user then re-verifies. TOFU can't secure the very first contact by itself, which is why the one-time fingerprint check anchors it.
 - **Standard crypto only:** no homemade algorithms. Every primitive comes from a well-reviewed library.
 - **CI on three operating systems:** the team uses Windows and macOS, and socket and path behavior differs. CI catches "works on my machine" bugs before the demo. macOS runs only on merges to `main` because its runner minutes cost about 10x Linux on our free plan.
 - **Security checks in the pipeline:** ruff's `S` rules flag risky code (e.g. hardcoded secrets, unsafe calls), and a test guarantees key files stay gitignored. CI only gets read access to the repo.
