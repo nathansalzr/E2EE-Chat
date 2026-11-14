@@ -100,22 +100,36 @@ A code review plus an independent "fresh-eyes" review of `mitm.py` found five is
 
 ## UC-3: Set up a secure session (key exchange)
 
-**Date:** _TBD_ · **Done by:** _TBD_
+**Date:** 2026-11-13 · **Done by:** Nathan (design, implementation, review fixes, tests) · **Tag:** `v0.3-e2ee` _(not yet — UC-4 encryption still to come)_
 
 ### Goal
 Both clients end up with the same AES-256 key, and the server and attacker can't compute it.
 
-### How we ran it _(planned)_
-Same three windows as UC-1, with `--mode e2ee` on both clients and debug mode on to print a short hash of the session key.
+### What we built
+- `crypto_utils.py`: X25519 keypair generate/load (`keys/<user>.key`, gitignored), base64 public key, SHA-256 fingerprint, and the session-key derivation (X25519 ECDH → HKDF-SHA256 → 32-byte AES-256 key).
+- A handshake in `client.py`: each client **announces** its public key and **replies** once to the peer's announcement; chat is blocked until the shared key exists; both print a short hash of the key.
+- New tests (crypto, handshake in both connect orders, no-private-key-on-wire). Full suite 92, lint + format clean.
+
+### How we ran it
+Through the new **web UI** (and the terminal): `python -m e2ee_chat.server`, then `python -m e2ee_chat.webclient --user alice --peer bob --web-port 8001` and the same for bob on 8002.
 
 ### What we saw
-_TBD: did both clients print the same key hash? Did any private key appear in `intercepted.log`?_
+- Both windows showed the **same session-key hash** (e.g. `6ec58545`) — proof the two sides agreed on one key without it ever crossing the wire.
+- The handshake converges no matter who connects first, and survives a client reconnecting with its saved key.
+- A session run through the MITM shows the `pubkey` exchange in `intercepted.log` but **no private key** (`test_mitm_privacy.py`, US-3 AC2).
 
-### What didn't work
-_TBD_
+### What didn't work (and how we fixed it)
+- A code review caught **two convergence bugs**: our first dedup rule (on the key value) silently dropped a same-key reconnect, and the handshake trusted a `pubkey` from *any* client, letting a third user desync the session. Both fixed (announce-vs-reply handshake, and trusting only the configured peer), each with a failing test first.
+- **CI was red** at the `ruff format --check` step (stricter than `ruff check`, never satisfied since UC-2). Fixed by running `ruff format`.
 
 ### Evidence
-- [ ] Screenshot of matching session-key hashes
+- [x] Matching session-key hashes — visible side-by-side in the two web windows (screenshot for the report)
+
+---
+
+## Demo: web UI for the presentation
+
+To make the live demo readable, each participant runs a small **localhost web window** instead of a raw terminal (`e2ee_chat/webclient.py`, stdlib only — no new dependencies). The browser is just a display; the real client, protocol and crypto stay in Python, so the terminal MITM attack is unchanged (point a window through the attacker with `--port 6060`). The window shows the secure-session key hash (UC-3) and the chat; it will show encrypted messages once UC-4 lands.
 
 ---
 
