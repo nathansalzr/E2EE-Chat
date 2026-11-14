@@ -23,10 +23,10 @@ from e2ee_chat.protocol import (
     send_msg,
 )
 
-LISTEN_HOST = "127.0.0.1"   # this machine
-LISTEN_PORT = 6060          # where clients connect, thinking it's the server
-SERVER_HOST = "127.0.0.1"   # the real server
-SERVER_PORT = 5050          # the real server's port
+LISTEN_HOST = "127.0.0.1"  # this machine
+LISTEN_PORT = 6060  # where clients connect, thinking it's the server
+SERVER_HOST = "127.0.0.1"  # the real server
+SERVER_PORT = 5050  # the real server's port
 LOG_FILE = "intercepted.log"
 
 # One lock shared by every thread so two directions never interleave a log line.
@@ -38,7 +38,7 @@ def log_message(log_file, direction, msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
     line = f"[{timestamp}] {direction} {msg}"
     with _log_lock:
-        print("[mitm]", line)                 # show it in the attacker's terminal
+        print("[mitm]", line)  # show it in the attacker's terminal
         # utf-8 + errors="replace": chat text is free-form (emoji, non-Latin), and
         # without this the default Windows cp1252 codec raises on the first such
         # character and we'd lose that message and every one after it.
@@ -57,7 +57,7 @@ def pump(source, destination, direction, log_file):
     try:
         while True:
             msg = recv_msg(source)
-            if msg is None:             # the other side closed cleanly
+            if msg is None:  # the other side closed cleanly
                 break
             log_message(log_file, direction, msg)
             send_msg(destination, msg)
@@ -101,24 +101,33 @@ def handle_client(client_sock, server_host, server_port, log_file):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="E2EE Chat man-in-the-middle (UC-2)")
     parser.add_argument("--host", default=LISTEN_HOST, help="address to listen on")
-    parser.add_argument("--port", type=port_number, default=LISTEN_PORT,
-                        help="port clients connect to (defaults to 6060)")
-    parser.add_argument("--server-host", default=SERVER_HOST,
-                        help="the real server's address")
-    parser.add_argument("--server-port", type=port_number, default=SERVER_PORT,
-                        help="the real server's port")
-    parser.add_argument("--mode", choices=["log"], default="log",
-                        help="log: forward and record every message (tamper/swap-keys come later)")
-    parser.add_argument("--log-file", default=LOG_FILE,
-                        help="where to write intercepted traffic")
+    parser.add_argument(
+        "--port",
+        type=port_number,
+        default=LISTEN_PORT,
+        help="port clients connect to (defaults to 6060)",
+    )
+    parser.add_argument("--server-host", default=SERVER_HOST, help="the real server's address")
+    parser.add_argument(
+        "--server-port", type=port_number, default=SERVER_PORT, help="the real server's port"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["log"],
+        default="log",
+        help="log: forward and record every message (tamper/swap-keys come later)",
+    )
+    parser.add_argument("--log-file", default=LOG_FILE, help="where to write intercepted traffic")
     args = parser.parse_args(argv)
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((args.host, args.port))
     listener.listen()
-    print(f"[mitm] mode={args.mode} listening on {args.host}:{args.port}, "
-          f"forwarding to {args.server_host}:{args.server_port}")
+    print(
+        f"[mitm] mode={args.mode} listening on {args.host}:{args.port}, "
+        f"forwarding to {args.server_host}:{args.server_port}"
+    )
 
     try:
         while True:
