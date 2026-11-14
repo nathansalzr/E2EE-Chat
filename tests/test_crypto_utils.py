@@ -3,6 +3,7 @@
 import base64
 
 from e2ee_chat.crypto_utils import (
+    fingerprint,
     load_or_create_keypair,
     public_key_b64,
 )
@@ -19,3 +20,17 @@ def test_public_key_b64_is_decodable_32_bytes(tmp_path):
     k = load_or_create_keypair("bob", keys_dir=str(tmp_path))
     raw = base64.b64decode(public_key_b64(k))
     assert len(raw) == 32
+
+
+def test_fingerprint_is_stable_and_grouped(tmp_path):
+    pub = public_key_b64(load_or_create_keypair("alice", keys_dir=str(tmp_path)))
+    fp = fingerprint(pub)
+    assert fp == fingerprint(pub)  # deterministic
+    assert set(fp.replace(" ", "")) <= set("0123456789ABCDEF")  # hex only
+    assert " " in fp  # grouped for readability
+
+
+def test_different_keys_give_different_fingerprints(tmp_path):
+    a = public_key_b64(load_or_create_keypair("a", keys_dir=str(tmp_path)))
+    b = public_key_b64(load_or_create_keypair("b", keys_dir=str(tmp_path)))
+    assert fingerprint(a) != fingerprint(b)

@@ -5,6 +5,7 @@ Primitives come only from the `cryptography` library — no homemade crypto.
 """
 
 import base64
+import hashlib
 import os
 
 from cryptography.hazmat.primitives import serialization
@@ -38,3 +39,13 @@ def public_key_b64(private_key: X25519PrivateKey) -> str:
     """Return the public key as base64 of its raw 32 bytes (printable, for the wire)."""
     raw = private_key.public_key().public_bytes(_RAW, _RAW_PUB)
     return base64.b64encode(raw).decode("ascii")
+
+
+def fingerprint(public_key_b64_str: str) -> str:
+    """SHA-256 of a base64 public key, as grouped uppercase hex.
+
+    Shown to users so they can compare keys out-of-band (used in UC-5).
+    Grouping (a space every 4 hex chars) makes it easy to read aloud.
+    """
+    digest = hashlib.sha256(base64.b64decode(public_key_b64_str)).hexdigest().upper()
+    return " ".join(digest[i : i + 4] for i in range(0, len(digest), 4))
