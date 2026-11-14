@@ -198,7 +198,7 @@ def test_main_ctrl_c_during_connect_exits_without_traceback(monkeypatch, capsys)
 
 # --- UC-3 handshake (Task 4) ---------------------------------------------
 
-from e2ee_chat.client import SessionNotReady  # noqa: E402
+from e2ee_chat.client import HANDSHAKE_TIMEOUT_SECONDS, SessionNotReady  # noqa: E402
 from e2ee_chat.crypto_utils import load_or_create_keypair, public_key_b64  # noqa: E402
 
 
@@ -305,3 +305,41 @@ def test_pubkey_from_a_stranger_is_ignored(secure):
     secure("carol", "alice")  # carol tries to hand alice a key
     time.sleep(0.3)
     assert alice.session_key == established  # unchanged: alice only trusts bob
+
+
+def test_main_exits_cleanly_on_corrupt_key_file(server, monkeypatch, tmp_path, capsys):
+    # Finding 4: a truncated keys/<user>.key must not crash with a traceback.
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    (keys / "alice.key").write_bytes(b"too short to be a key")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--port", str(server.port), "--user", "alice", "--peer", "bob"])
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "key file" in err.lower()
+    assert "Traceback" not in err
+
+
+def test_main_ctrl_c_during_handshake_exits_cleanly(server, monkeypatch, tmp_path, capsys):
+    # Finding 5: Ctrl+C while waiting for the handshake exits cleanly (no traceback).
+    bob = ChatClient(
+        "127.0.0.1", server.port, "bob", on_message=lambda m: None, peer="alice",
+        keys_dir=str(tmp_path),
+    )
+    bob.connect()
+    monkeypatch.chdir(tmp_path)
+
+    # Raise only on the handshake wait (keyed by its timeout), not on the
+    # internal Event.wait that Thread.start() uses.
+    real_wait = threading.Event.wait
+
+    def boom(self, timeout=None):
+        if timeout == HANDSHAKE_TIMEOUT_SECONDS:
+            raise KeyboardInterrupt
+        return real_wait(self, timeout)
+
+    monkeypatch.setattr(threading.Event, "wait", boom)
+    main(["--port", str(server.port), "--user", "alice", "--peer", "bob"])  # must not raise
+    assert "Traceback" not in capsys.readouterr().err
+    bob.close()

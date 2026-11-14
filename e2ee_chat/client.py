@@ -255,9 +255,16 @@ def main(argv: list[str] | None = None) -> None:
             lost.set()
         print(format_message(msg), flush=True)
 
-    client = ChatClient(args.host, args.port, args.user, on_message=show, peer=args.peer)
     try:
+        client = ChatClient(args.host, args.port, args.user, on_message=show, peer=args.peer)
         client.connect()
+    except ValueError:  # an unreadable / truncated key file
+        print(
+            f"! cannot read the key file for {args.user}; "
+            f"delete keys/{args.user}.key to make a new one",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except (ConnectionError, RegistrationError) as exc:
         print(f"! {exc}", file=sys.stderr)
         sys.exit(1)
@@ -266,12 +273,13 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     print(f"Connected as {args.user}. Messages go to {args.peer}. Type /quit to leave.")
-    # Wait for the secure session before accepting input, so no line is typed
-    # (and dropped) before the handshake finishes. The "* secure session ready"
-    # line is printed by show() when it completes.
-    if client.peer is not None and not client.session_ready.wait(HANDSHAKE_TIMEOUT_SECONDS):
-        print("! secure session not established yet (is your peer online?)", flush=True)
     try:
+        # Wait for the secure session before accepting input, so no line is typed
+        # (and dropped) before the handshake finishes. The "* secure session ready"
+        # line is printed by show() when it completes. A Ctrl+C here is caught
+        # below so we still close() cleanly.
+        if client.peer is not None and not client.session_ready.wait(HANDSHAKE_TIMEOUT_SECONDS):
+            print("! secure session not established yet (is your peer online?)", flush=True)
         while not lost.is_set():
             try:
                 line = input()
@@ -290,6 +298,8 @@ def main(argv: list[str] | None = None) -> None:
             except OSError:
                 print("! connection to server lost", flush=True)
                 break
+    except KeyboardInterrupt:  # Ctrl+C while waiting for the handshake
+        pass
     finally:
         client.close()
 
