@@ -58,5 +58,5 @@ def test_different_peers_give_different_keys(tmp_path):
 
 def test_bad_peer_key_raises(tmp_path):
     alice = load_or_create_keypair("alice", keys_dir=str(tmp_path))
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):  # bad base64 / wrong key length both subclass ValueError
         derive_session_key(alice, "not-valid-base64-or-key")
