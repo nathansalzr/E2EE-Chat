@@ -11,6 +11,7 @@ import socket
 import sys
 import threading
 from collections.abc import Callable
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM 
 
 from e2ee_chat.protocol import (
     DEFAULT_PORT,
@@ -20,6 +21,8 @@ from e2ee_chat.protocol import (
     port_number,
     recv_msg,
     send_msg,
+    encrypt_text,
+    decrypt
 )
 
 CONNECT_TIMEOUT_SECONDS = 5
@@ -81,7 +84,9 @@ class ChatClient:
 
     def send_chat(self, to: str, text: str) -> None:
         """Send one chat message. Raises OSError if the connection is gone."""
-        send_msg(self._sock, {"type": "chat", "to": to, "text": text})
+        ### temp key generation for testing
+        test_key = AESGCM.generate_key(bit_length=256)
+        send_msg(self._sock, {"type": "chat", "to": to, "text": encrypt_text(text, test_key)})
 
     def close(self) -> None:
         """Hang up. Safe to call more than once."""

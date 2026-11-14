@@ -11,6 +11,9 @@ import json
 import re
 import socket
 import struct
+import base64
+import os
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM 
 
 DEFAULT_PORT = 5050  # not 5000: macOS uses that port for AirPlay
 MAX_FRAME = 65_536  # biggest body we accept, so a bad length can't eat all memory
@@ -67,6 +70,13 @@ def encode_frame(msg: dict) -> bytes:
 def send_msg(sock: socket.socket, msg: dict) -> None:
     """Send one message. sendall keeps going until every byte is out."""
     sock.sendall(encode_frame(msg))
+
+def encrypt_text(plain: str, key: bytes) -> str:
+    nonce = os.urandom(12)
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, plain.encode("utf-8"), associated_data = None)
+    payload = nonce + ciphertext
+    return base64.b64encode(payload).decode("utf-8")
 
 
 def _recv_exact(sock: socket.socket, count: int) -> bytes:
@@ -134,3 +144,13 @@ def recv_msg(sock: socket.socket) -> dict | None:
     if body is None:
         return None
     return decode_body(body)
+
+def decrypt(payload: str, key: bytes) -> str:
+    raw_payload = base64.b64decode(payload)
+    nonce = raw_payload[:12]
+    ciphertext_with_tag = raw_payload[12:]
+    aesgcm = AESGCM(key)
+    plaintext_bytes = aesgcm.decrypt(
+        nonce, ciphertext_with_tag, associated_data=None
+    )
+    return plaintext_bytes.decode("utf-8")
