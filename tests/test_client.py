@@ -108,13 +108,27 @@ def test_main_exits_cleanly_when_server_down(capsys):
     assert "cannot reach server" in output.out + output.err
 
 
-def test_main_sends_typed_lines_to_peer(server, make_client, monkeypatch):
-    _, bob_inbox = make_client("bob")
+def test_main_sends_typed_lines_to_peer(server, monkeypatch, tmp_path):
+    # UC-3: both ends run the handshake, so bob is a secure client too.
+    bob_inbox: queue.Queue = queue.Queue()
+    bob = ChatClient(
+        "127.0.0.1", server.port, "bob", on_message=bob_inbox.put, peer="alice",
+        keys_dir=str(tmp_path),
+    )
+    bob.connect()
     lines = iter(["hello bob", "/quit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    monkeypatch.chdir(tmp_path)  # keep alice's keys/ out of the repo
     main(["--port", str(server.port), "--user", "alice", "--peer", "bob"])
-    msg = bob_inbox.get(timeout=1)
-    assert (msg["from"], msg["text"]) == ("alice", "hello bob")
+    got = None
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        msg = bob_inbox.get(timeout=2)
+        if msg.get("type") == "chat":  # skip the secure_session handshake event
+            got = msg
+            break
+    assert got is not None and (got["from"], got["text"]) == ("alice", "hello bob")
+    bob.close()
 
 
 def test_format_message_strips_terminal_control_codes():
@@ -180,3 +194,78 @@ def test_main_ctrl_c_during_connect_exits_without_traceback(monkeypatch, capsys)
         main(["--user", "alice", "--peer", "bob"])
     assert exit_info.value.code == 1
     assert "Traceback" not in capsys.readouterr().err
+
+
+# --- UC-3 handshake (Task 4) ---------------------------------------------
+
+from e2ee_chat.client import SessionNotReady  # noqa: E402
+from e2ee_chat.crypto_utils import load_or_create_keypair, public_key_b64  # noqa: E402
+
+
+def make_secure(server, tmp_path, name, peer, keep):
+    inbox: queue.Queue = queue.Queue()
+    c = ChatClient(
+        "127.0.0.1", server.port, name, on_message=inbox.put, peer=peer, keys_dir=str(tmp_path)
+    )
+    c.connect()
+    keep.append(c)
+    return c, inbox
+
+
+@pytest.fixture
+def secure(server, tmp_path):
+    made = []
+    yield lambda name, peer: make_secure(server, tmp_path, name, peer, made)
+    for c in made:
+        c.close()
+
+
+def test_handshake_same_key_alice_first(secure):
+    alice, _ = secure("alice", "bob")
+    bob, _ = secure("bob", "alice")
+    assert alice.session_ready.wait(2) and bob.session_ready.wait(2)
+    assert alice.session_key is not None
+    assert alice.session_key == bob.session_key
+
+
+def test_handshake_same_key_bob_first(secure):
+    bob, _ = secure("bob", "alice")
+    alice, _ = secure("alice", "bob")
+    assert alice.session_ready.wait(2) and bob.session_ready.wait(2)
+    assert alice.session_key == bob.session_key is not None
+
+
+def test_chat_blocked_until_session_ready(secure):
+    alice, _ = secure("alice", "bob")  # bob never connects -> never ready
+    assert not alice.session_ready.is_set()
+    with pytest.raises(SessionNotReady):
+        alice.send_chat("bob", "too early")
+
+
+def test_duplicate_pubkey_is_ignored(secure):
+    alice, _ = secure("alice", "bob")
+    bob, _ = secure("bob", "alice")
+    assert alice.session_ready.wait(2)
+    established = alice.session_key
+    alice._handle_pubkey({"type": "pubkey", "key": alice.peer_public})  # same key again
+    assert alice.session_key is established  # not re-derived
+
+
+def test_reconnect_with_new_key_rederives(secure, tmp_path):
+    alice, _ = secure("alice", "bob")
+    bob, _ = secure("bob", "alice")
+    assert alice.session_ready.wait(2)
+    first = alice.session_key
+    new_peer_key = public_key_b64(load_or_create_keypair("bob_v2", keys_dir=str(tmp_path)))
+    alice._handle_pubkey({"type": "pubkey", "key": new_peer_key})
+    assert alice.session_ready.is_set()
+    assert alice.session_key != first  # re-derived on the changed key
+
+
+def test_malformed_pubkey_does_not_crash_client(secure, tmp_path):
+    alice, _ = secure("alice", "bob")  # not ready (bob offline)
+    alice._handle_pubkey({"type": "pubkey", "key": "!!!not-valid-base64!!!"})
+    assert not alice.session_ready.is_set()  # survived, still not ready
+    good = public_key_b64(load_or_create_keypair("bob", keys_dir=str(tmp_path)))
+    alice._handle_pubkey({"type": "pubkey", "key": good})
+    assert alice.session_ready.is_set()  # a good key afterwards still works

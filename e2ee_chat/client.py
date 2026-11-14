@@ -7,11 +7,17 @@ Every line you type goes to --peer. Messages from others print as they arrive.
 """
 
 import argparse
+import hashlib
 import socket
 import sys
 import threading
 from collections.abc import Callable
 
+from e2ee_chat.crypto_utils import (
+    derive_session_key,
+    load_or_create_keypair,
+    public_key_b64,
+)
 from e2ee_chat.protocol import (
     DEFAULT_PORT,
     BadMessage,
@@ -23,6 +29,7 @@ from e2ee_chat.protocol import (
 )
 
 CONNECT_TIMEOUT_SECONDS = 5
+HANDSHAKE_TIMEOUT_SECONDS = 10
 
 
 class RegistrationError(Exception):
@@ -34,6 +41,10 @@ class RegistrationError(Exception):
         self.message = message
 
 
+class SessionNotReady(Exception):
+    """Tried to chat before the secure session (UC-3 handshake) finished."""
+
+
 class ChatClient:
     """Connects to the server, registers a username, and receives in the background.
 
@@ -41,13 +52,33 @@ class ChatClient:
     server sends, plus {"type": "disconnected"} once if the server goes away.
     """
 
-    def __init__(self, host: str, port: int, username: str, on_message: Callable[[dict], None]):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        on_message: Callable[[dict], None],
+        peer: str | None = None,
+        keys_dir: str = "keys",
+    ):
         self.host = host
         self.port = port
         self.username = username
         self.on_message = on_message
         self._sock: socket.socket | None = None
         self._closing = False  # set by close(), so we don't report our own hang-up
+
+        # Secure-session state (UC-3). When peer is None the client stays in the
+        # plaintext mode used by UC-1; when it is set, connect() runs the X25519
+        # handshake and chat is blocked until a session key exists.
+        self.peer = peer
+        self.session_ready = threading.Event()
+        self.session_key: bytes | None = None
+        self.peer_public: str | None = None
+        self._hs_lock = threading.Lock()
+        if peer is not None:
+            self._my_private = load_or_create_keypair(username, keys_dir)
+            self._my_public_b64 = public_key_b64(self._my_private)
 
     def connect(self) -> None:
         """Connect and register. Raises ConnectionError or RegistrationError."""
@@ -79,9 +110,53 @@ class ChatClient:
         self._sock = sock
         threading.Thread(target=self._receive_loop, name="receive", daemon=True).start()
 
+        # Start the handshake: announce our public key to the peer. If the peer
+        # is offline the server replies user_offline and drops it — harmless,
+        # because the later-joining peer's own send reaches us and triggers the
+        # exchange. (US-4 AC1)
+        if self.peer is not None:
+            try:
+                send_msg(sock, {"type": "pubkey", "to": self.peer, "key": self._my_public_b64})
+            except OSError:
+                pass
+
     def send_chat(self, to: str, text: str) -> None:
-        """Send one chat message. Raises OSError if the connection is gone."""
+        """Send one chat message. Raises OSError if the connection is gone.
+
+        In secure mode, raises SessionNotReady until the handshake completes, so
+        no plaintext chat is sent before the session key exists (US-4 AC1).
+        """
+        if self.peer is not None and not self.session_ready.is_set():
+            raise SessionNotReady("secure session not established yet")
         send_msg(self._sock, {"type": "chat", "to": to, "text": text})
+
+    def _handle_pubkey(self, msg: dict) -> None:
+        """Handle a peer's public key: dedup, derive the session key, reply.
+
+        The dedup is on the key VALUE: an exact repeat is ignored (so the two
+        clients can't ping-pong replies), while a new or changed key is stored,
+        replied to, and (re-)derived (so the later joiner and a reconnecting
+        peer both converge). A malformed key is swallowed, leaving the session
+        not-ready rather than killing the receive thread. (Design: Handshake)
+        """
+        key = msg.get("key")
+        with self._hs_lock:
+            if not isinstance(key, str) or key == self.peer_public:
+                return  # not a key, or one we already hold -> ignore
+            try:
+                session = derive_session_key(self._my_private, key)
+            except Exception:  # noqa: BLE001 - any bad key stays not-ready, never crashes
+                return
+            self.peer_public = key
+            self.session_key = session
+            self.session_ready.set()
+        # Reply with our key so the peer can derive too (do socket I/O off the lock).
+        try:
+            send_msg(self._sock, {"type": "pubkey", "to": self.peer, "key": self._my_public_b64})
+        except OSError:
+            pass
+        key_hash = hashlib.sha256(session).hexdigest()[:8]
+        self.on_message({"type": "secure_session", "key_hash": key_hash})
 
     def close(self) -> None:
         """Hang up. Safe to call more than once."""
@@ -107,6 +182,9 @@ class ChatClient:
                     continue
                 if msg is None:
                     break  # server closed the connection
+                if self.peer is not None and msg.get("type") == "pubkey":
+                    self._handle_pubkey(msg)  # handshake internals, not shown to the user
+                    continue
                 self.on_message(msg)
         except Exception:  # noqa: S110 - any failure here means the same thing to the user
             # Usually broken framing (ProtocolError) or a dropped connection
@@ -135,6 +213,8 @@ def format_message(msg: dict) -> str:
         return f"! {clean(msg.get('code'))}: {clean(msg.get('message'))}"
     if kind == "disconnected":
         return "! connection to server lost"
+    if kind == "secure_session":
+        return f"* secure session ready (key {clean(msg.get('key_hash'))})"
     return f"? unexpected {clean(kind)} message"
 
 
@@ -156,7 +236,7 @@ def main(argv: list[str] | None = None) -> None:
             lost.set()
         print(format_message(msg), flush=True)
 
-    client = ChatClient(args.host, args.port, args.user, on_message=show)
+    client = ChatClient(args.host, args.port, args.user, on_message=show, peer=args.peer)
     try:
         client.connect()
     except (ConnectionError, RegistrationError) as exc:
@@ -167,6 +247,11 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     print(f"Connected as {args.user}. Messages go to {args.peer}. Type /quit to leave.")
+    # Wait for the secure session before accepting input, so no line is typed
+    # (and dropped) before the handshake finishes. The "* secure session ready"
+    # line is printed by show() when it completes.
+    if client.peer is not None and not client.session_ready.wait(HANDSHAKE_TIMEOUT_SECONDS):
+        print("! secure session not established yet (is your peer online?)", flush=True)
     try:
         while not lost.is_set():
             try:
@@ -179,6 +264,8 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             try:
                 client.send_chat(args.peer, line)
+            except SessionNotReady:
+                print("! setting up secure session, try again in a moment", flush=True)
             except MessageTooLarge:
                 print("! message too long", flush=True)
             except OSError:
