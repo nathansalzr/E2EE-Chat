@@ -93,7 +93,7 @@ A code review plus an independent "fresh-eyes" review of `mitm.py` found five is
 
 ### Evidence
 - [x] Attacker terminal + `intercepted.log` screenshot (`docs/05_Evidence/uc2-plaintext-intercept.png1.jpeg`, `png2.jpeg`)
-- [ ] Wireshark screenshot showing the message text (AC5 — still to capture)
+- [x] Wireshark screenshot showing the message text (`docs/05_Evidence/UC2_wireshark-plaintext.png`)
 - [ ] 20-second clip
 
 ---
