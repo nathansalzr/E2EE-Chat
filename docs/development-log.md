@@ -61,13 +61,13 @@ _Tick or correct these once you've tried each one yourself._
 
 ## UC-2: Intercept chat traffic as a man-in-the-middle
 
-**Date:** _TBD_ · **Done by:** _TBD_ · **Tag:** `v0.2-attack` _(not yet)_
+**Date:** 2026-11-13 · **Done by:** Vishank (MITM + first intercept run and evidence), Nathan (code review, hardening, tests, merge) · **Tag:** `v0.2-attack` _(not yet — waiting on the Wireshark shot)_
 
 ### Goal
 Prove that plaintext chat is readable in transit, which covers the "perform an attack" half of the assignment.
 
-### How we ran it _(planned)_
-Four windows: server, attacker, Alice, Bob. The clients connect to the attacker's port instead of the server's.
+### How we ran it
+Four windows: server, attacker, Alice, Bob. The clients connect to the attacker's port (6060) instead of the server's (5050).
 
 | Window | Command |
 |---|---|
@@ -76,17 +76,24 @@ Four windows: server, attacker, Alice, Bob. The clients connect to the attacker'
 | 3. Alice | `.venv\Scripts\python -m e2ee_chat.client --port 6060 --user alice --peer bob` |
 | 4. Bob | `.venv\Scripts\python -m e2ee_chat.client --port 6060 --user bob --peer alice` |
 
-Plus Wireshark capturing on the loopback adapter, filtered to `tcp.port == 6060`.
+Plus Wireshark capturing on the loopback adapter, filtered to `tcp.port == 6060`. _(Wireshark step still to do.)_
 
 ### What we saw
-_TBD: what the attacker window and `intercepted.log` showed, and what Wireshark showed._
+- Alice and Bob chatted normally through the MITM and couldn't tell it was there (US-2 AC1).
+- The attacker window printed every message live, and `intercepted.log` captured the whole conversation — registrations and chat, both directions — in **readable plaintext**, including a planted "secret code" (AC2, AC3).
+- The real server still only logged `alice -> bob (chat)` with no text, which is the point: the server looks innocent, but anyone *in the path* reads everything.
 
-### What didn't work
-_TBD_
+### What didn't work (and how we fixed it)
+A code review plus an independent "fresh-eyes" review of `mitm.py` found five issues; all are fixed on the merged branch (PR #2). The useful ones for the report:
+- **A single emoji or non-Latin character crashed the attacker's logging on Windows** and silently dropped that message and every message after it. The log file was opened without `encoding="utf-8"`, so Windows' default cp1252 codec raised on the first such character. Lesson: always set the encoding when writing text files; the default is platform-dependent. Fixed with `encoding="utf-8", errors="replace"`.
+- **The MITM never closed its sockets when a client left,** so a blocked relay thread leaked and the real server never saw the client disconnect — the username stayed "taken" on reconnect. Fixed by closing both sockets when either direction ends.
+- **The documented `--mode log` flag didn't actually exist** (the file had no argument parsing), so the attacker was really being run as plain `python -m e2ee_chat.mitm`. Added proper `--host`/`--port`/`--mode` arguments matching the server and client.
+- Smaller: protocol/connection errors now end a relay direction cleanly instead of throwing a traceback, and a lock stops the two directions interleaving lines in the log.
+- Added `tests/test_mitm.py` (a smoke test for the relay + plaintext logging) so these can't silently regress. Full suite: 70 tests pass.
 
 ### Evidence
-- [ ] Attacker terminal + `intercepted.log` screenshot
-- [ ] Wireshark screenshot showing the message text
+- [x] Attacker terminal + `intercepted.log` screenshot (`docs/05_Evidence/uc2-plaintext-intercept.png1.jpeg`, `png2.jpeg`)
+- [ ] Wireshark screenshot showing the message text (AC5 — still to capture)
 - [ ] 20-second clip
 
 ---

@@ -96,6 +96,52 @@ By default the server only accepts connections from the same computer. To chat b
 
 The message format is in [`docs/protocol.md`](docs/protocol.md).
 
+## Running the attack (UC-2)
+
+This is the man-in-the-middle demo: it proves the plaintext chat above is readable in transit. **Read the [ethics rule](#ethics-rule) first — run this only against our own app on our own machines.**
+
+The trick is that the clients connect to the **attacker's** port (6060) instead of the server's (5050). The MITM forwards every message both ways, so Alice and Bob chat normally and can't tell, while it logs a copy of everything.
+
+Open **four terminals** in the project folder, venv active in each, and start them **in this order**:
+
+**1. The real server** (port 5050, as usual):
+
+```bash
+python -m e2ee_chat.server
+```
+
+**2. The attacker** — listens on 6060, forwards to the server on 5050:
+
+```bash
+python -m e2ee_chat.mitm --mode log
+```
+
+You should see `[mitm] mode=log listening on 127.0.0.1:6060, forwarding to 127.0.0.1:5050`.
+
+**3. Alice and 4. Bob** — same as before, but pointed at the attacker's port with `--port 6060`:
+
+```bash
+python -m e2ee_chat.client --port 6060 --user alice --peer bob
+```
+
+```bash
+python -m e2ee_chat.client --port 6060 --user bob --peer alice
+```
+
+Now chat between Alice and Bob. The messages go through fine, but the attacker terminal prints each one and **writes it to `intercepted.log` in the folder you ran the MITM from** — in readable plaintext. That log is gitignored and must never be committed.
+
+| Option (`mitm`) | Meaning | Default |
+|---|---|---|
+| `--port` | Port the attacker listens on (clients connect here) | `6060` |
+| `--host` | Address the attacker listens on | `127.0.0.1` |
+| `--server-host` / `--server-port` | The real server to forward to | `127.0.0.1` / `5050` |
+| `--mode` | `log` reads and records every message (`tamper` and `swap-keys` arrive in UC-4/UC-5) | `log` |
+| `--log-file` | Where to write intercepted traffic | `intercepted.log` |
+
+To show the traffic at the packet level (US-2 AC5), run **Wireshark** on the loopback adapter with the filter `tcp.port == 6060` while you chat; the message text appears right in the TCP payload. Save the screenshots in `docs/05_Evidence/`.
+
+Full write-up: [`docs/uc2-walkthrough.md`](docs/uc2-walkthrough.md).
+
 ## Running the checks (same as CI)
 
 ```bash
