@@ -172,6 +172,18 @@ and reconnect both clients. Every encrypted message now has one bit flipped on t
 
 The web UI takes the same `--mode e2ee|plain` flag and shows a 🔒 on encrypted messages. Full write-up: [`docs/uc4-walkthrough.md`](docs/uc4-walkthrough.md).
 
+## Key-swap attack and fingerprints (UC-5)
+
+Encryption only helps if you're using the *right* key. An active attacker can hand each side its own public key during the exchange, then read everything while both sides still see "secure session ready".
+
+**See the attack:** start fresh (`Remove-Item keys\known_peers -Recurse`), run the attacker in `--mode swap-keys`, and connect Alice and Bob through port 6060 in the default e2ee mode. The attacker terminal prints `DECRYPTED alice->bob: ...` — it's reading the "encrypted" chat.
+
+**Catch it with fingerprints:** both users type `/fingerprint` and compare the lines over a separate channel (in person or phone). Under the swap, Alice's `bob` fingerprint won't match Bob's own. Either user types `/abort` to end the session.
+
+**Trust-on-first-use alarm:** each client pins a contact's key the first time it sees it (`keys/known_peers/`). If the key later changes, the client fires `!!! WARNING: ...key has CHANGED`, blocks sending, and hides incoming messages until you `/trust` (after re-verifying) or `/abort`. The web UI shows this as a red banner with Trust/Abort buttons.
+
+This is the model behind Signal's safety numbers, WhatsApp's security code, and SSH's host-key prompt. Full write-up: [`docs/uc5-walkthrough.md`](docs/uc5-walkthrough.md).
+
 ## Demo for class
 
 The step-by-step live demo, covering every command, what the audience should see, and the real-world attack each step maps to, is in [`docs/demo-guide.md`](docs/demo-guide.md). The narrated video script is [`docs/demo-script.md`](docs/demo-script.md).

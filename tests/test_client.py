@@ -544,3 +544,141 @@ def test_plain_chat_cannot_claim_to_be_encrypted():
         assert msg["text"] == "hi" and "encrypted" not in msg
     finally:
         c.close()
+
+
+# --- UC-5: fingerprints, TOFU pinning, /trust, /abort (T34, T36, T69) -----
+
+from e2ee_chat.client import KeyNotTrusted, run_command  # noqa: E402
+from e2ee_chat.crypto_utils import fingerprint, pin_key  # noqa: E402
+
+
+def _wait_gone(server, name):
+    deadline = time.time() + 2
+    while name in server.online_users() and time.time() < deadline:
+        time.sleep(0.02)
+
+
+def test_first_contact_pins_key_and_reports_fingerprints(secure, tmp_path):
+    alice, alice_inbox, bob, _ = ready_pair(secure)
+    event = next_of(alice_inbox, "secure_session")
+    assert event["trust"] == "new"
+    assert event["my_fingerprint"] == fingerprint(public_key_b64(alice._my_private))
+    assert event["peer_fingerprint"] == fingerprint(public_key_b64(bob._my_private))  # AC1
+    assert (tmp_path / "known_peers" / "alice" / "bob.pub").exists()
+    assert alice.trusted.is_set()
+
+
+def test_same_key_next_session_is_pinned_and_silent(secure, server, tmp_path):
+    alice, _, bob, _ = ready_pair(secure)
+    alice.close()
+    bob.close()
+    _wait_gone(server, "alice")
+    _wait_gone(server, "bob")
+    alice2, alice2_inbox, _, bob2_inbox = ready_pair(secure)
+    assert next_of(alice2_inbox, "secure_session")["trust"] == "pinned"
+    alice2.send_chat("bob", "same keys as yesterday")
+    assert next_of(bob2_inbox, "chat")["text"] == "same keys as yesterday"
+    assert "CHANGED" not in format_message({"type": "secure_session", "trust": "pinned"})
+
+
+def test_changed_key_alarms_blocks_and_holds_until_trusted(secure, tmp_path):
+    # Alice pinned an older bob key; today "bob" shows up with a different one.
+    old = public_key_b64(load_or_create_keypair("old_bob", keys_dir=str(tmp_path)))
+    pin_key("alice", "bob", old, str(tmp_path))
+    alice, alice_inbox, bob, _ = ready_pair(secure)
+
+    event = next_of(alice_inbox, "secure_session")
+    assert event["trust"] == "changed"
+    assert "CHANGED" in format_message(event) and "/trust or /abort" in format_message(event)
+    assert not alice.trusted.is_set()
+    with pytest.raises(KeyNotTrusted):  # sending blocked
+        alice.send_chat("bob", "are you there?")
+
+    bob.send_chat("alice", "it's me, honest")
+    held = next_of(alice_inbox, "held_untrusted")
+    assert held["from"] == "bob" and "text" not in held  # nothing shown from the new key
+
+    assert alice.trust_peer()  # after comparing fingerprints out-of-band
+    assert next_of(alice_inbox, "key_trusted")["peer"] == "bob"
+    bob.send_chat("alice", "verified now")
+    assert next_of(alice_inbox, "chat")["text"] == "verified now"
+    pinned = (tmp_path / "known_peers" / "alice" / "bob.pub").read_text()
+    assert pinned == public_key_b64(bob._my_private)  # re-pinned to the verified key
+
+
+def test_abort_closes_and_reports(secure):
+    alice, alice_inbox, _, _ = ready_pair(secure)
+    alice.abort()
+    assert next_of(alice_inbox, "session_aborted") == {"type": "session_aborted"}
+    with pytest.raises(OSError):
+        alice.send_chat("bob", "after abort")
+
+
+def test_spoofed_uc5_events_from_network_are_dropped(tmp_path):
+    port = _hostile_server_frames(
+        [
+            {"type": "key_trusted", "peer": "bob"},
+            {"type": "held_untrusted", "from": "bob"},
+            {"type": "session_aborted"},
+            {"type": "error", "code": "user_offline", "message": "marker"},
+        ]
+    )
+    inbox: queue.Queue = queue.Queue()
+    c = ChatClient("127.0.0.1", port, "alice", inbox.put, peer="bob", keys_dir=str(tmp_path))
+    c.connect()
+    try:
+        assert inbox.get(timeout=2)["message"] == "marker"
+    finally:
+        c.close()
+
+
+def test_run_command_fingerprint_trust_abort_and_unknown(secure, capsys):
+    alice, _, bob, _ = ready_pair(secure)
+    assert run_command(alice, "/fingerprint") is False
+    out = capsys.readouterr().out
+    assert fingerprint(public_key_b64(bob._my_private)) in out
+    assert fingerprint(public_key_b64(alice._my_private)) in out
+    assert run_command(alice, "/nope") is False
+    assert "unknown command" in capsys.readouterr().out
+    assert run_command(alice, "/trust") is False
+    assert run_command(alice, "/abort") is True
+
+
+def test_run_command_in_plain_mode_is_refused(server, capsys):
+    c = ChatClient("127.0.0.1", server.port, "alice", lambda m: None, peer="bob", mode="plain")
+    assert run_command(c, "/fingerprint") is False
+    assert "not available in plain mode" in capsys.readouterr().out
+
+
+def test_main_slash_commands_are_not_sent_as_chat(server, monkeypatch, tmp_path):
+    bob_inbox: queue.Queue = queue.Queue()
+    bob = ChatClient(
+        "127.0.0.1",
+        server.port,
+        "bob",
+        bob_inbox.put,
+        peer="alice",
+        keys_dir=str(tmp_path / "keys"),
+    )
+    bob.connect()
+    lines = iter(["/fingerprint", "/whatever", "hello", "/abort"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    monkeypatch.chdir(tmp_path)
+    main(["--port", str(server.port), "--user", "alice", "--peer", "bob"])
+    msg = next_of(bob_inbox, "chat")
+    assert msg["text"] == "hello"  # the only line that went out as chat
+    bob.close()
+
+
+def test_trust_peer_survives_an_unwritable_keys_dir(secure, tmp_path, monkeypatch):
+    alice, alice_inbox, _, _ = ready_pair(secure)
+    next_of(alice_inbox, "secure_session")
+
+    def boom(*a, **k):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr("e2ee_chat.client.pin_key", boom)
+    assert alice.trust_peer() is True  # trusts for this session, no traceback
+    ev = next_of(alice_inbox, "key_trusted")
+    assert ev["persisted"] is False
+    assert alice.trusted.is_set()

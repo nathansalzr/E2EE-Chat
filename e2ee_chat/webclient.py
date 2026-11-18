@@ -24,8 +24,14 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from e2ee_chat.client import MODES, ChatClient, RegistrationError, SessionNotReady
-from e2ee_chat.protocol import DEFAULT_PORT, MessageTooLarge, port_number
+from e2ee_chat.client import (
+    MODES,
+    ChatClient,
+    KeyNotTrusted,
+    RegistrationError,
+    SessionNotReady,
+)
+from e2ee_chat.protocol import DEFAULT_PORT, MessageTooLarge, is_valid_username, port_number
 
 
 class ChatApp:
@@ -36,6 +42,8 @@ class ChatApp:
         self.user = user
         self.peer = peer
         self.mode = mode
+        self.host = "127.0.0.1"  # set from args in main(); used for the CSRF origin check
+        self.web_port = 8000
         # True once we can chat: after the handshake in e2ee mode, at once in plain mode.
         self.ready = mode == "plain"
         self._subscribers: list[queue.Queue] = []
@@ -87,8 +95,39 @@ class ChatApp:
                 }
             )
         elif kind == "secure_session":
+            trust = msg.get("trust")
+            # A changed key means we don't trust the session yet: hold sending
+            # until the user compares fingerprints and clicks Trust.
+            self.ready = trust != "changed"
+            self.publish(
+                {
+                    "kind": "secure",
+                    "key_hash": msg.get("key_hash"),
+                    "trust": trust,
+                    "peer": msg.get("peer"),
+                    "my_fingerprint": msg.get("my_fingerprint"),
+                    "peer_fingerprint": msg.get("peer_fingerprint"),
+                }
+            )
+        elif kind == "held_untrusted":
+            self.publish(
+                {
+                    "kind": "error",
+                    "text": f"message from {msg.get('from')} dropped (not shown): their key "
+                    "changed. Compare fingerprints, then Trust or Abort.",
+                }
+            )
+        elif kind == "key_trusted":
             self.ready = True
-            self.publish({"kind": "secure", "key_hash": msg.get("key_hash")})
+            self.publish(
+                {
+                    "kind": "trusted",
+                    "peer": msg.get("peer"),
+                    "fingerprint": msg.get("peer_fingerprint"),
+                }
+            )
+        elif kind == "session_aborted":
+            self.publish({"kind": "system", "text": "session aborted — the key was not trusted"})
         elif kind == "error":
             # While the handshake is still in flight, a user_offline just means we
             # announced our key before the peer joined — not worth showing.
@@ -133,20 +172,61 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send_bytes(204, "text/plain", b"")
 
+    def _same_origin(self) -> bool:
+        """Reject cross-site POSTs (CSRF).
+
+        The browser sets Origin on POSTs. If another page the user has open
+        posted here, its Origin wouldn't be our own http://host:web-port, so a
+        malicious site couldn't silently send a message or trust a swapped key.
+        We also require application/json, which a plain HTML form can't send.
+        """
+        ctype = self.headers.get("Content-Type", "")
+        if not ctype.startswith("application/json"):
+            return False
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True  # non-browser client (our tests / curl); no ambient cookies to abuse
+        return origin in self._allowed_origins()
+
+    def _allowed_origins(self) -> set[str]:
+        """Our own web origin(s). On loopback, 127.0.0.1 and localhost are the
+        same server but distinct browser origins, so accept both; otherwise the
+        buttons silently 403 depending on which name the user typed."""
+        port = self.app.web_port
+        hosts = {self.app.host}
+        if self.app.host in ("127.0.0.1", "localhost", "::1"):
+            hosts |= {"127.0.0.1", "localhost"}
+        return {f"http://{h}:{port}" for h in hosts}
+
     def do_POST(self) -> None:
-        if self.path != "/send":
+        if self.path not in ("/send", "/trust", "/abort"):
             self._send_bytes(404, "text/plain", b"not found")
+            return
+        if not self._same_origin():
+            self._send_bytes(403, "text/plain", b"forbidden")
             return
         length = int(self.headers.get("Content-Length", 0))
         try:
-            text = json.loads(self.rfile.read(length)).get("text", "")
+            body = json.loads(self.rfile.read(length)) if length else {}
         except (ValueError, TypeError):
-            text = ""
+            body = {}
+        if self.path == "/trust":
+            ok = self.app.client.trust_peer()
+            self._json({"ok": bool(ok)})
+            return
+        if self.path == "/abort":
+            self.app.client.abort()
+            self._json({"ok": True})
+            return
+        text = body.get("text", "") if isinstance(body, dict) else ""
         if not text.strip():
             self._json({"ok": False, "reason": "empty"})
             return
         try:
             self.app.client.send_chat(self.app.peer, text)
+        except KeyNotTrusted:
+            self._json({"ok": False, "reason": "key_changed"})
+            return
         except SessionNotReady:
             self._json({"ok": False, "reason": "not_ready"})
             return
@@ -205,7 +285,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--no-open", action="store_true", help="don't open a browser automatically")
     args = parser.parse_args(argv)
 
+    # The names are substituted into the served HTML/JS, so hold them to the
+    # username rule before rendering (defense in depth against HTML/JS injection;
+    # the server enforces the same rule on register).
+    for label, name in (("--user", args.user), ("--peer", args.peer)):
+        if not is_valid_username(name):
+            raise SystemExit(f"! {label} must be 1-20 of letters, digits, _ or -")
+
     app = ChatApp(args.user, args.peer, args.mode)
+    app.host = args.host
+    app.web_port = args.web_port
     client = ChatClient(
         args.host,
         args.port,

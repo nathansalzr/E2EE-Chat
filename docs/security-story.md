@@ -11,8 +11,8 @@ The one-page backbone for the report and the presentation. It ties every use cas
 | Piece | Role |
 |---|---|
 | `server.py` | A relay. Registers usernames and forwards each message to its recipient. It can see everything that passes through. |
-| `client.py` (Alice, Bob) | The two chat users. Encrypts by default (`--mode e2ee`, UC-4); `--mode plain` keeps the unencrypted chat for the demo. Later gains a `/fingerprint` command. |
-| `mitm.py` | Our own red-team man-in-the-middle. Sits in the path, forwards traffic so the chat still works, and logs everything. `--mode tamper` flips a ciphertext bit (UC-4); later gains `--mode swap-keys`. |
+| `client.py` (Alice, Bob) | The two chat users. Encrypts by default (`--mode e2ee`, UC-4); `--mode plain` keeps the unencrypted chat for the demo. Has `/fingerprint`, `/trust` and `/abort`, and pins each contact's key (UC-5). |
+| `mitm.py` | Our own red-team man-in-the-middle. Sits in the path, forwards traffic so the chat still works, and logs everything. `--mode tamper` flips a ciphertext bit (UC-4); `--mode swap-keys` substitutes keys (UC-5). |
 | Encryption (coming) | X25519 key exchange → shared AES-256-GCM session key. |
 | Fingerprints (coming) | A short SHA-256 hash of each public key, compared out-of-band to detect key substitution. |
 
@@ -48,9 +48,9 @@ Each stage is the *same attacker in the same position*; only the clients' defens
 | 1 | **UC-2** | Reads plaintext in transit (`mitm --mode log` + Wireshark) | The whole conversation in cleartext | *Motivation:* no confidentiality without encryption | ✅ Done (`v0.2-attack`) |
 | 2 | **UC-4** | Reruns the exact same attack against encrypted chat | Only base64 ciphertext + nonce — no readable words | **Confidentiality** | ✅ Done (UC-4) |
 | 3 | **UC-4 / US-6** | Flips one byte of ciphertext (`mitm --mode tamper`) | Bob's client rejects the message | **Integrity** | ✅ Done (UC-4) |
-| 4 | **UC-5 / US-7** | Swaps its own public keys during the exchange (`mitm --mode swap-keys`), nobody checks | Reads the "encrypted" chat again — naive E2EE defeated | *Shows the real remaining threat* | ⏳ Pending |
-| 5 | **UC-5 / US-7** | Same key-swap, but Alice and Bob compare fingerprints | Fingerprints don't match → they abort → attacker fails | **Authenticity** | ⏳ Pending |
-| 6 | **UC-5 / US-7** | Appears *after* a trusted first contact and swaps keys | The peer's pinned key no longer matches → the app alarms automatically → user re-verifies | **Authenticity (continuous / TOFU)** | ⏳ Pending |
+| 4 | **UC-5 / US-7** | Swaps its own public keys during the exchange (`mitm --mode swap-keys`), nobody checks | Reads the "encrypted" chat again — naive E2EE defeated | *Shows the real remaining threat* | ✅ Done (UC-5) |
+| 5 | **UC-5 / US-7** | Same key-swap, but Alice and Bob compare fingerprints | Fingerprints don't match → they abort → attacker fails | **Authenticity** | ✅ Done (UC-5) |
+| 6 | **UC-5 / US-7** | Appears *after* a trusted first contact and swaps keys | The peer's pinned key no longer matches → the app alarms automatically → user re-verifies | **Authenticity (continuous / TOFU)** | ✅ Done (UC-5) |
 
 **Why stage 4 strengthens the project instead of weakening it:** the key-swap attack is a *known, fundamental* limitation of exchanging public keys over an untrusted channel — it exists whether or not we demo it. A project that stops at stage 3 looks secure but has an unaddressed hole a sharp grader would find. By showing the attack *and* the fingerprint defense, we prove the encryption is complete: it stands up to the strongest attacker, not just a passive one.
 
@@ -68,4 +68,4 @@ Every defense here mirrors something in production security:
 
 ---
 
-*Status: UC-1 to UC-4 are implemented (plaintext chat, the attack, the key exchange, encryption + tamper detection). UC-5 (fingerprints, key-change alarm) is planned per [`ROADMAP.md`](ROADMAP.md); the stages above marked ⏳ become recordable as those land.*
+*Status: UC-1 to UC-5 are implemented — plaintext chat, the MITM attack, the key exchange, encryption + tamper detection, and fingerprint verification with a trust-on-first-use key-change alarm. The remaining work is the report, slides and demo (UC-7), plus the evidence screenshots.*

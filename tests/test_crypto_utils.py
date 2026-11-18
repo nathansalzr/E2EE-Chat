@@ -139,3 +139,55 @@ def test_relabelled_sender_is_rejected():
 def test_malformed_fields_raise_integrity_error(nonce, ct):
     with pytest.raises(IntegrityError):
         decrypt_message(KEY, nonce, ct, AAD)
+
+
+# --- UC-5: trust-on-first-use pins (T69) ----------------------------------
+
+from e2ee_chat.crypto_utils import (  # noqa: E402
+    PIN_CHANGED,
+    PIN_MATCH,
+    PIN_NEW,
+    check_pin,
+    pin_key,
+)
+
+
+def _pub(tmp_path, name):
+    return public_key_b64(load_or_create_keypair(name, keys_dir=str(tmp_path / "k")))
+
+
+def test_pin_new_then_match_then_changed(tmp_path):
+    kd = str(tmp_path)
+    bob, eve = _pub(tmp_path, "bob"), _pub(tmp_path, "eve")
+    assert check_pin("alice", "bob", bob, kd) == PIN_NEW
+    assert (tmp_path / "known_peers" / "alice" / "bob.pub").exists()
+    assert check_pin("alice", "bob", bob, kd) == PIN_MATCH  # silent on the same key
+    assert check_pin("alice", "bob", eve, kd) == PIN_CHANGED  # alarm on a different key
+    assert check_pin("alice", "bob", bob, kd) == PIN_MATCH  # a changed key is NOT auto-pinned
+
+
+def test_pins_are_scoped_per_local_user(tmp_path):
+    kd = str(tmp_path)
+    assert check_pin("alice", "bob", _pub(tmp_path, "bob"), kd) == PIN_NEW
+    assert check_pin("carol", "bob", _pub(tmp_path, "eve"), kd) == PIN_NEW  # carol's own pin
+
+
+def test_pin_key_repins(tmp_path):
+    kd = str(tmp_path)
+    bob, eve = _pub(tmp_path, "bob"), _pub(tmp_path, "eve")
+    check_pin("alice", "bob", bob, kd)
+    pin_key("alice", "bob", eve, kd)  # what /trust does
+    assert check_pin("alice", "bob", eve, kd) == PIN_MATCH
+
+
+def test_unreadable_pin_fails_closed(tmp_path):
+    path = tmp_path / "known_peers" / "alice"
+    path.mkdir(parents=True)
+    (path / "bob.pub").write_bytes(b"\xff\xfe not ascii")
+    assert check_pin("alice", "bob", _pub(tmp_path, "bob"), str(tmp_path)) == PIN_CHANGED
+
+
+@pytest.mark.parametrize("bad", ["../evil", "a/b", "", "x" * 21, "C:"])
+def test_pin_rejects_unsafe_names(tmp_path, bad):
+    with pytest.raises(ValueError):
+        check_pin("alice", bad, "AAAA", str(tmp_path))

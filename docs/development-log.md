@@ -172,22 +172,32 @@ UC-2's four windows again (server, `mitm --mode log`, alice and bob on `--port 6
 
 ## UC-5: Verify a contact's key and catch key changes
 
-**Date:** _TBD_ · **Done by:** _TBD_ · **Tag:** `v1.0` _(code freeze, Nov 16)_
+**Date:** 2026-11-18 · **Done by:** Nathan (swap-keys attack, fingerprints, TOFU, web UI, tests, docs) · **Tag:** `v1.0` _(after merge + evidence)_
 
 ### Goal
 Show that encryption alone isn't enough when the attacker swaps public keys, then show the defense: a one-time fingerprint check that anchors first contact, **plus trust-on-first-use (TOFU)** that pins the peer's key and alarms if it ever changes. Together: encrypted messages **and** a continuous "same trusted key?" alarm.
 
-### How we ran it _(planned)_
-UC-2's four windows, with the attacker on `--mode swap-keys`. First nobody checks (attacker reads the "encrypted" chat); then both users `/fingerprint` and compare out-of-band (mismatch → `/abort`). Finally, pin a key, reconnect with a changed key, and show the TOFU "key changed — re-verify" alarm firing on its own.
+### What we built
+- `mitm.py --mode swap-keys`: a `KeySwapper` hands each client the attacker's public key and decrypts/re-encrypts in the middle.
+- `/fingerprint`, `/trust`, `/abort` in `client.py`; the `secure_session` event now carries both fingerprints and a `trust` value.
+- TOFU pinning in `crypto_utils.py` (`check_pin`/`pin_key`): a changed key alarms, blocks sending, and hides incoming messages until `/trust` or `/abort`.
+- Web UI: fingerprint panel, red key-change alarm with Trust/Abort buttons, plus a CSRF guard on all POSTs.
+- 36 new tests (155 total), lint and format clean. Full write-up: [`uc5-walkthrough.md`](uc5-walkthrough.md).
+
+### How we ran it
+UC-2's four windows with the attacker on `--mode swap-keys`. First with fresh keys (nobody has pinned anything); then a clean `--mode log` session to pin the real keys, followed by reconnecting under `--mode swap-keys`.
 
 ### What we saw
-_TBD: did the attacker read the "encrypted" chat? Did the fingerprints differ? Did the TOFU alarm fire on a changed key and stay silent on an unchanged one?_
+- **The swap worked:** Alice and Bob showed *different* session-key hashes (each shares a key with the attacker), and the attacker log printed `DECRYPTED alice->bob: transfer 5000 to account 8891`. `/fingerprint` showed Alice's "bob" fingerprint differing from Bob's own — the out-of-band mismatch that reveals the attack.
+- **TOFU caught it:** after a clean session pinned the real keys, reconnecting under the swap fired `!!! WARNING: bob's key has CHANGED`, sending was blocked, and the test message never appeared in the attacker's log.
+- An unchanged key stays silent (just `* secure session ready`), and a brand-new contact shows the "verify once" hint.
 
-### What didn't work
-_TBD_
+### What didn't work (and how we fixed it)
+- **A shared test helper didn't pass the attacker's keypair.** `_start_mitm_mode` was written for UC-4 (log/tamper) and never built a `KeySwapper`, so the first swap-keys tests saw no swap. Fixed by constructing one for that mode.
+- **CSRF on the web UI.** Adding `/trust` meant a web page the presenter had open could POST to `localhost:8001/trust` and silently accept a swapped key. Added an Origin + `application/json` check on every POST, with a test.
 
 ### Evidence
-- [ ] Attacker reading the chat during the key swap
+- [ ] Attacker reading the chat during the key swap (`DECRYPTED` log line)
 - [ ] Mismatched fingerprints screenshot
 - [ ] TOFU "key changed" alarm screenshot
 - [ ] Clips

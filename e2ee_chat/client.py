@@ -16,12 +16,17 @@ import threading
 from collections.abc import Callable
 
 from e2ee_chat.crypto_utils import (
+    PIN_CHANGED,
+    PIN_MATCH,
     IntegrityError,
     chat_aad,
+    check_pin,
     decrypt_message,
     derive_session_key,
     encrypt_message,
+    fingerprint,
     load_or_create_keypair,
+    pin_key,
     public_key_b64,
 )
 from e2ee_chat.protocol import (
@@ -42,7 +47,20 @@ MODES = ("e2ee", "plain")
 # never be accepted from the network, or a MITM could fake "secure session
 # ready (key …)" or an integrity warning.
 LOCAL_EVENTS = frozenset(
-    {"secure_session", "integrity_error", "downgrade_rejected", "disconnected"}
+    {
+        "secure_session",
+        "integrity_error",
+        "downgrade_rejected",
+        "disconnected",
+        "held_untrusted",
+        "key_trusted",
+        "session_aborted",
+    }
+)
+
+COMMANDS_HELP = (
+    "commands: /fingerprint (show keys to compare), /trust (accept a changed key), "
+    "/abort (end the session), /quit"
 )
 
 
@@ -59,6 +77,10 @@ class SessionNotReady(Exception):
     """Tried to chat before the secure session (UC-3 handshake) finished."""
 
 
+class KeyNotTrusted(SessionNotReady):
+    """The peer's key changed since we pinned it (UC-5 TOFU): re-verify first."""
+
+
 class ChatClient:
     """Connects to the server, registers a username, and receives in the background.
 
@@ -70,6 +92,11 @@ class ChatClient:
     the CLI and the web UI never touch ciphertext. A message that fails
     decryption becomes ``integrity_error``; a plaintext ``chat`` becomes
     ``downgrade_rejected``. Neither is ever shown as a chat line.
+
+    UC-5 trust-on-first-use: the peer's public key is pinned the first time
+    (``keys/known_peers/<me>/<peer>.pub``). If a later key differs, the
+    ``secure_session`` event says ``trust: "changed"``, sending raises
+    KeyNotTrusted and incoming messages are held, until trust_peer() or abort().
     """
 
     def __init__(
@@ -107,6 +134,11 @@ class ChatClient:
         self.session_ready = threading.Event()
         self.session_key: bytes | None = None
         self.peer_public: str | None = None
+        self.keys_dir = keys_dir
+        # UC-5: set while the peer's key is one we trust (first contact or
+        # matching the pin); cleared when it changed and the user hasn't re-verified.
+        self.trusted = threading.Event()
+        self.trust: str | None = None  # "new" / "pinned" / "changed" for this session
         self._hs_lock = threading.Lock()
         self._send_lock = threading.Lock()  # one frame at a time on the shared socket
         if self.secure:
@@ -179,10 +211,18 @@ class ChatClient:
         if to != self.peer:
             # The session key is shared with our peer only; anyone else couldn't read it.
             raise ValueError(f"e2ee mode only sends to the session peer ({self.peer})")
+        # Read the key, readiness and trust together under the lock, so a re-key
+        # on the receive thread can't flip "trusted" between our check and our
+        # use of the key. We only ever encrypt with a key that was trusted at
+        # the instant we captured it (no send before /trust, US-5).
         with self._hs_lock:
-            key = self.session_key if self.session_ready.is_set() else None
-        if key is None:
+            ready = self.session_ready.is_set()
+            trusted = self.trusted.is_set()
+            key = self.session_key
+        if not ready or key is None:
             raise SessionNotReady("secure session not established yet")
+        if not trusted:
+            raise KeyNotTrusted(f"{self.peer}'s key changed; verify it, then /trust or /abort")
         nonce, ciphertext = encrypt_message(key, text, chat_aad(self.username, to))
         self._send({"type": "encrypted", "to": to, "nonce": nonce, "ciphertext": ciphertext})
 
@@ -198,6 +238,10 @@ class ChatClient:
             key = self.session_key if self.session_ready.is_set() else None
         if key is None or sender != self.peer:
             return {"type": "integrity_error", "from": sender}
+        if not self.trusted.is_set():
+            # UC-5: the key changed. Don't show anything from it until the
+            # user has re-verified (it may be an attacker's key).
+            return {"type": "held_untrusted", "from": sender}
         try:
             text = decrypt_message(
                 key,
@@ -240,14 +284,81 @@ class ChatClient:
                     return
                 self.peer_public = key
                 self.session_key = session
+                self.trust = self._check_trust(key)
+                if self.trust == PIN_CHANGED:
+                    self.trusted.clear()
+                else:
+                    self.trusted.set()
                 self.session_ready.set()
             key_hash = (
                 hashlib.sha256(self.session_key).hexdigest()[:8] if self.session_key else None
             )
+            trust = self.trust
         if not is_reply:
             self._send_pubkey(reply=True)  # answer an announcement (even on reconnect)
         if changed:
-            self.on_message({"type": "secure_session", "key_hash": key_hash})
+            mine, theirs = self.fingerprints()
+            self.on_message(
+                {
+                    "type": "secure_session",
+                    "key_hash": key_hash,
+                    "peer": self.peer,
+                    "trust": trust,
+                    "my_fingerprint": mine,
+                    "peer_fingerprint": theirs,
+                }
+            )
+
+    def _check_trust(self, peer_key: str) -> str:
+        """TOFU check against the pinned key. Any error fails closed (changed)."""
+        try:
+            return check_pin(self.username, self.peer, peer_key, self.keys_dir)
+        except (OSError, ValueError):
+            return PIN_CHANGED
+
+    def fingerprints(self) -> tuple[str | None, str | None]:
+        """(our fingerprint, the peer's fingerprint) to compare out-of-band (US-7 AC1)."""
+        if not self.secure:
+            return None, None
+        with self._hs_lock:
+            peer_key = self.peer_public
+        mine = fingerprint(self._my_public_b64)
+        return mine, fingerprint(peer_key) if peer_key else None
+
+    def trust_peer(self) -> bool:
+        """Accept the peer's current key after verifying it (/trust): re-pin and unblock.
+
+        Returns False if there is no peer key yet. Only call this after the
+        fingerprints were compared out-of-band, or it defeats the alarm.
+        """
+        with self._hs_lock:
+            peer_key = self.peer_public
+            if peer_key is None:
+                return False
+            # If the pin file can't be written (permissions, full disk), still
+            # trust the key for this session rather than crash the input loop;
+            # it just won't be remembered next time.
+            try:
+                pin_key(self.username, self.peer, peer_key, self.keys_dir)
+                persisted = True
+            except OSError:
+                persisted = False
+            self.trust = PIN_MATCH
+            self.trusted.set()
+        self.on_message(
+            {
+                "type": "key_trusted",
+                "peer": self.peer,
+                "peer_fingerprint": fingerprint(peer_key),
+                "persisted": persisted,
+            }
+        )
+        return True
+
+    def abort(self) -> None:
+        """End the session because the key can't be trusted (/abort, US-7 AC4)."""
+        self.close()
+        self.on_message({"type": "session_aborted"})
 
     def close(self) -> None:
         """Hang up. Safe to call more than once."""
@@ -327,8 +438,59 @@ def format_message(msg: dict) -> str:
     if kind == "disconnected":
         return "! connection to server lost"
     if kind == "secure_session":
-        return f"* secure session ready (key {clean(msg.get('key_hash'))})"
+        line = f"* secure session ready (key {clean(msg.get('key_hash'))})"
+        peer = clean(msg.get("peer") or "your peer")
+        if msg.get("trust") == "new":
+            line += (
+                f"\n* new contact {peer}: key pinned. Verify it once: run /fingerprint and "
+                f"compare with {peer} in person or by phone"
+            )
+        elif msg.get("trust") == "changed":
+            line += (
+                f"\n!!! WARNING: {peer}'s key has CHANGED since your last session."
+                "\n!!! This could be a man-in-the-middle. Sending is blocked and messages are"
+                " hidden."
+                f"\n!!! Compare /fingerprint with {peer} out-of-band, then /trust or /abort."
+            )
+        return line
+    if kind == "held_untrusted":
+        return (
+            f"! message from {clean(msg.get('from'))} dropped (not shown): their key changed. "
+            "/fingerprint, then /trust (future messages) or /abort"
+        )
+    if kind == "key_trusted":
+        return f"* {clean(msg.get('peer'))}'s key trusted and pinned; sending unblocked"
+    if kind == "session_aborted":
+        return "* session aborted"
     return f"? unexpected {clean(kind)} message"
+
+
+def run_command(client: ChatClient, command: str) -> bool:
+    """Handle a /command typed at the prompt. Returns True if the session should end."""
+    name = command.split()[0].lower()
+    if name not in ("/fingerprint", "/trust", "/abort"):
+        print(f"! unknown command {sanitize_for_terminal(name)}; {COMMANDS_HELP}", flush=True)
+        return False
+    if not client.secure:
+        print(f"! {name} is not available in plain mode (no keys)", flush=True)
+        return False
+    if name == "/abort":
+        client.abort()
+        return True
+    if name == "/trust":
+        if not client.trust_peer():
+            print("! no key from your peer yet, nothing to trust", flush=True)
+        return False
+    mine, theirs = client.fingerprints()
+    print(f"  your fingerprint:      {mine}", flush=True)
+    print(f"  {client.peer}'s fingerprint: {theirs or '(no key yet)'}", flush=True)
+    print(
+        f"  Read these to {client.peer} over another channel (in person / phone). "
+        f"Your '{client.peer}' line must equal their 'your fingerprint' line, "
+        "or someone swapped the keys.",
+        flush=True,
+    )
+    return False
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -377,6 +539,8 @@ def main(argv: list[str] | None = None) -> None:
         f"Connected as {args.user} ({args.mode} mode). Messages go to {args.peer}. "
         "Type /quit to leave."
     )
+    if args.mode == "e2ee":
+        print(f"  {COMMANDS_HELP}", flush=True)
     if args.mode == "plain":
         print("! plain mode: messages are NOT encrypted", flush=True)
     try:
@@ -391,12 +555,23 @@ def main(argv: list[str] | None = None) -> None:
                 line = input()
             except (EOFError, KeyboardInterrupt):
                 break
-            if line.strip() == "/quit" or lost.is_set():
+            command = line.strip()
+            if command == "/quit" or lost.is_set():
                 break
-            if not line.strip():
+            if not command:
+                continue
+            if command.startswith("/"):
+                if run_command(client, command):
+                    break  # /abort
                 continue
             try:
                 client.send_chat(args.peer, line)
+            except KeyNotTrusted:
+                print(
+                    f"! sending blocked: {args.peer}'s key changed. "
+                    "Run /fingerprint, compare out-of-band, then /trust or /abort",
+                    flush=True,
+                )
             except SessionNotReady:
                 print("! setting up secure session, try again in a moment", flush=True)
             except MessageTooLarge:

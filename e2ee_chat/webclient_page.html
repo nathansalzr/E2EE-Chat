@@ -26,6 +26,15 @@
   .sys  { align-self:center; color:var(--muted); font-size:13px; }
   .err  { align-self:center; color:#ff6b6b; font-size:13px; }
   #status.plain { color:#ffb020; }
+  .fp { margin-top:6px; font-size:12px; color:var(--muted); font-family:ui-monospace,monospace;
+        line-height:1.5; }
+  .fp .lbl { color:var(--text); }
+  .alarm { margin-top:8px; padding:8px 10px; border-radius:8px; background:#3a0d0d;
+           border:1px solid #ff6b6b; color:#ffd7d7; font-size:13px; }
+  .alarm-btns { margin-top:8px; display:flex; gap:8px; }
+  .alarm-btns button { padding:6px 12px; font-size:13px; }
+  #trust { background:#c0392b; }
+  #abort { background:var(--them); }
   form { display:flex; gap:8px; padding:12px 16px;
          background:var(--panel); border-top:1px solid #000a; }
   input { flex:1; padding:10px 12px; border-radius:10px; border:1px solid #000a;
@@ -41,6 +50,14 @@
     <div class="who">__USER__</div>
     <div class="peer">chatting with __PEER__</div>
     <div id="status">connecting…</div>
+    <div id="fp" class="fp" hidden></div>
+    <div id="alarm" class="alarm" hidden>
+      <div id="alarm-text"></div>
+      <div class="alarm-btns">
+        <button id="trust" type="button">Trust new key</button>
+        <button id="abort" type="button">Abort</button>
+      </div>
+    </div>
   </header>
   <div id="log"></div>
   <form id="f">
@@ -53,12 +70,40 @@
   const status = document.getElementById('status');
   const form = document.getElementById('f');
   const input = document.getElementById('t');
+  const sendBtn = document.getElementById('send');
+  const fp = document.getElementById('fp');
+  const alarm = document.getElementById('alarm');
+  const alarmText = document.getElementById('alarm-text');
+  const peer = '__PEER__';
   const mode = '__MODE__';
   let ready = mode === 'plain';
   if (mode === 'plain') {
     status.textContent = '⚠ plain mode — messages are NOT encrypted';
     status.className = 'plain';
   }
+
+  function setBlocked(blocked) {
+    input.disabled = blocked;
+    sendBtn.disabled = blocked;
+  }
+
+  function showFingerprints(ev) {
+    if (!ev.my_fingerprint) return;
+    fp.hidden = false;
+    fp.innerHTML = '<span class="lbl">you:</span> ' + ev.my_fingerprint
+                 + '<br><span class="lbl">' + peer + ':</span> ' + ev.peer_fingerprint;
+  }
+
+  async function post(path, body) {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    return r.json();
+  }
+  document.getElementById('trust').addEventListener('click', () => post('/trust'));
+  document.getElementById('abort').addEventListener('click', () => post('/abort'));
 
   function add(cls, text) {
     const d = document.createElement('div');
@@ -75,10 +120,30 @@
       add(ev.mine ? 'me' : 'them',
           (ev.encrypted ? '🔒 ' : '') + (ev.mine ? '' : ev.from + ': ') + ev.text);
     } else if (ev.kind === 'secure') {
+      showFingerprints(ev);
+      if (ev.trust === 'changed') {
+        ready = false;
+        setBlocked(true);
+        status.textContent = '⚠ ' + peer + "'s key CHANGED — verify before trusting";
+        status.className = 'plain';
+        alarm.hidden = false;
+        alarmText.textContent = peer + "'s key has changed since last time. This could be a "
+          + 'man-in-the-middle. Compare the fingerprints above with ' + peer
+          + ' in person or by phone, then Trust or Abort.';
+      } else {
+        ready = true;
+        setBlocked(false);
+        const note = ev.trust === 'new' ? ' (new contact — verify the fingerprints once)' : '';
+        status.textContent = '🔒 secure session — key ' + ev.key_hash + note;
+        status.className = 'secure';
+      }
+    } else if (ev.kind === 'trusted') {
       ready = true;
-      status.textContent = '🔒 secure session established — key ' + ev.key_hash
-                         + ' (compare with your peer)';
+      setBlocked(false);
+      alarm.hidden = true;
+      status.textContent = '🔒 ' + peer + "'s new key trusted";
       status.className = 'secure';
+      add('sys', peer + "'s key is now trusted and pinned.");
     } else if (ev.kind === 'system') {
       add('sys', ev.text);
     } else if (ev.kind === 'error') {
@@ -102,6 +167,8 @@
     const res = await r.json();
     if (!res.ok && res.reason === 'not_ready') {
       add('sys', 'still setting up the secure session — try again in a moment');
+    } else if (!res.ok && res.reason === 'key_changed') {
+      add('err', peer + "'s key changed — Trust it or Abort before sending");
     } else if (!res.ok) {
       add('err', 'could not send (' + (res.reason || 'error') + ')');
     }
