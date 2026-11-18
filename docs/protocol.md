@@ -59,16 +59,24 @@ The server forwards these three types the same way, by `to`. It doesn't interpre
 | Type | Used in | Shape (client → server) |
 |---|---|---|
 | `chat` | UC-1 | `{"type": "chat", "to": "bob", "text": "hi"}` |
-| `pubkey` | UC-3 (reserved) | `{"type": "pubkey", "to": "bob", "key": "<base64 X25519 public key>"}` |
-| `encrypted` | UC-4 (reserved) | `{"type": "encrypted", "to": "bob", "nonce": "<base64>", "ciphertext": "<base64>"}` |
+| `pubkey` | UC-3 | `{"type": "pubkey", "to": "bob", "key": "<base64 X25519 public key>"}` |
+| `encrypted` | UC-4 | `{"type": "encrypted", "to": "bob", "nonce": "<base64>", "ciphertext": "<base64>"}` |
 
 Because the server never needs to understand `pubkey` or `encrypted`, UC-3 and UC-4 only change the clients.
+
+## Encrypted messages (UC-4)
+
+- `nonce`: base64 of a fresh random 12-byte (96-bit) nonce, new for every message.
+- `ciphertext`: base64 of AES-256-GCM output (the encrypted UTF-8 text followed by the 16-byte authentication tag), using the UC-3 session key.
+- **Associated data (AAD):** `e2ee-chat v1|<sender>|<recipient>` in UTF-8, authenticated but not sent. The receiver rebuilds it from the server-stamped `from` and its own username, so a relabelled or redirected message fails the tag check. Usernames can't contain `|`, so this is unambiguous.
+- A client in `e2ee` mode (the default) sends only `encrypted` chat messages and **never displays a plaintext `chat`**. It reports it as a possible downgrade attack instead.
+- If decryption fails for any reason (bad tag, wrong key, wrong AAD, bad base64, wrong nonce length), the message is dropped with "message failed integrity check" and the connection stays open.
 
 ## Ports
 
 | Program | Default port |
 |---|---|
 | Server | 5050 (not 5000, which macOS uses for AirPlay) |
-| MITM (UC-2) | 6060 |
+| MITM (UC-2, UC-4) | 6060 |
 
 The server listens only on `127.0.0.1` unless it's started with `--host 0.0.0.0` for the two-machine test.

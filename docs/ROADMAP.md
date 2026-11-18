@@ -232,10 +232,12 @@ Suggested commands and ports are placeholders until the protocol spec (T1) confi
 6. **T32 Reject tampered messages (Attack lead):** catch `InvalidTag`, show "message failed integrity check" and drop the message.
 
 **Done when:**
-- [ ] The recipient sees the exact original text.
-- [ ] `intercepted.log` and Wireshark contain no readable words.
-- [ ] A tampered message is rejected; untouched messages still arrive.
-- [ ] An `e2ee` client rejects a plaintext message (no downgrade).
+- [x] The recipient sees the exact original text.
+- [x] `intercepted.log` contains no readable words (Wireshark capture: record with the evidence).
+- [x] A tampered message is rejected; untouched messages still arrive.
+- [x] An `e2ee` client rejects a plaintext message (no downgrade).
+
+Walkthrough: [`uc4-walkthrough.md`](uc4-walkthrough.md).
 
 **Tests:** encrypt → decrypt round trip, a flipped byte raises `InvalidTag`, two encryptions of the same text never use the same nonce, and an `e2ee` client rejects plaintext.
 

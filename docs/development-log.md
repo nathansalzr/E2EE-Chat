@@ -129,25 +129,38 @@ Through the new **web UI** (and the terminal): `python -m e2ee_chat.server`, the
 
 ## Demo: web UI for the presentation
 
-To make the live demo readable, each participant runs a small **localhost web window** instead of a raw terminal (`e2ee_chat/webclient.py`, stdlib only — no new dependencies). The browser is just a display; the real client, protocol and crypto stay in Python, so the terminal MITM attack is unchanged (point a window through the attacker with `--port 6060`). The window shows the secure-session key hash (UC-3) and the chat; it will show encrypted messages once UC-4 lands.
+To make the live demo readable, each participant runs a small **localhost web window** instead of a raw terminal (`e2ee_chat/webclient.py`, stdlib only — no new dependencies). The browser is just a display; the real client, protocol and crypto stay in Python, so the terminal MITM attack is unchanged (point a window through the attacker with `--port 6060`). The window shows the secure-session key hash (UC-3) and the chat; since UC-4 it marks encrypted messages with 🔒 and shows integrity/downgrade warnings in red.
 
 ---
 
 ## UC-4: Send and receive an encrypted message
 
-**Date:** _TBD_ · **Done by:** _TBD_ · **Tag:** `v0.3-e2ee` _(not yet)_
+**Date:** 2026-11-17 · **Done by:** Alex (first AES-GCM version, PR 7), Nathan (rebuild on the UC-3 session key, tamper/downgrade handling, MITM tamper mode, web UI, tests, docs) · **Tag:** `v0.3-e2ee` _(after merge + evidence)_
 
 ### Goal
 The UC-2 attack now captures only gibberish, and a tampered message is rejected. This covers the "stop an attack" half.
 
-### How we ran it _(planned)_
-UC-2's four windows again, but both clients use `--mode e2ee`. Then restart the attacker with `--mode tamper`.
+### What we built
+- `crypto_utils.py`: AES-256-GCM `encrypt_message` / `decrypt_message` with a fresh 12-byte nonce per message, AAD binding sender and recipient, and one `IntegrityError` for every failure.
+- `client.py --mode e2ee` (now the default): sends the reserved `encrypted` message type, decrypts before display, drops tampered messages without disconnecting, and rejects plaintext as a possible downgrade. `--mode plain` keeps the UC-1 chat for the demo.
+- `mitm.py --mode tamper`: flips one bit of each encrypted message's ciphertext.
+- Web UI: `--mode`, a 🔒 on encrypted messages, red warnings for integrity/downgrade.
+- 33 new tests (125 total), lint and format clean. Full write-up: [`uc4-walkthrough.md`](uc4-walkthrough.md).
+
+### How we ran it
+UC-2's four windows again (server, `mitm --mode log`, alice and bob on `--port 6060`), with both clients in the default e2ee mode. Then we restarted the attacker with `--mode tamper`.
 
 ### What we saw
-_TBD: the attacker log before vs. after encryption; what Bob saw when a message was tampered with._
+- With `--mode plain` the attacker log shows the chat in clear text. In e2ee mode the same attack logs only `{'type': 'encrypted', 'nonce': '…', 'ciphertext': '…'}`, with no readable words. The automated version of this check is `test_e2ee_through_mitm_log_shows_only_ciphertext`.
+- With `--mode tamper`, Bob sees `! message failed integrity check (from alice), dropped`, stays connected, and the next untampered message still arrives.
+- _TBD when recorded: Wireshark observations on `tcp.port == 6060`._
 
-### What didn't work
-_TBD_
+### What didn't work (and how we fixed it)
+- **The first version (PR 7) was branched before UC-2/UC-3 merged.** It used a hardcoded test key instead of the session key and conflicted with `main` in `client.py`. We rebuilt UC-4 on a fresh branch from `main` and kept its nonce and base64 approach.
+- **A bad tag disconnected the chat.** After catching `InvalidTag`, the first version still returned an unset variable. The receive thread crashed and the user saw "connection lost". Now every decryption failure becomes an `integrity_error` event and the chat continues.
+- **Decrypting inside `format_message`** meant any non-encrypted message (an error, a plaintext chat) also crashed the display. Now decryption happens once in the receive thread, and formatting never touches ciphertext.
+- **Tampering twice cancels out.** With both clients behind the MITM, every message passes it twice, and flipping the same bit on both legs restores the original. Tamper mode now only acts on the client→server leg.
+- **Code review: spoofed local events.** A MITM could send a frame typed `secure_session` and the client printed a fake `* secure session ready (key deadbeef)`. A plaintext chat with `"encrypted": true` showed a 🔒 in the web UI. Now network frames using our local event names are dropped, and only a real decryption sets the 🔒. Both are covered by tests.
 
 ### Evidence
 - [ ] Before/after side-by-side (plaintext log vs. ciphertext log)

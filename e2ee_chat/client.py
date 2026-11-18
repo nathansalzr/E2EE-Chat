@@ -1,9 +1,11 @@
-"""Plaintext command-line chat client (T5, T7).
+"""Command-line chat client (T5, T7; secure session UC-3; encryption UC-4).
 
-Run it with:  python -m e2ee_chat.client --user alice --peer bob
+Run it with:  python -m e2ee_chat.client --user alice --peer bob [--mode e2ee|plain]
 
 Every line you type goes to --peer. Messages from others print as they arrive.
---mode plain is the only mode for now; UC-4 adds --mode e2ee.
+--mode e2ee (the default) swaps keys, then sends every message encrypted with
+AES-256-GCM. --mode plain is the UC-1 plaintext chat, kept for the demo's
+"before" step.
 """
 
 import argparse
@@ -14,7 +16,11 @@ import threading
 from collections.abc import Callable
 
 from e2ee_chat.crypto_utils import (
+    IntegrityError,
+    chat_aad,
+    decrypt_message,
     derive_session_key,
+    encrypt_message,
     load_or_create_keypair,
     public_key_b64,
 )
@@ -30,6 +36,14 @@ from e2ee_chat.protocol import (
 
 CONNECT_TIMEOUT_SECONDS = 5
 HANDSHAKE_TIMEOUT_SECONDS = 10
+MODES = ("e2ee", "plain")
+
+# Event types this client creates itself to tell the UI something. They must
+# never be accepted from the network, or a MITM could fake "secure session
+# ready (key …)" or an integrity warning.
+LOCAL_EVENTS = frozenset(
+    {"secure_session", "integrity_error", "downgrade_rejected", "disconnected"}
+)
 
 
 class RegistrationError(Exception):
@@ -50,6 +64,12 @@ class ChatClient:
 
     on_message is called (from the receive thread) with every message the
     server sends, plus {"type": "disconnected"} once if the server goes away.
+
+    In e2ee mode, incoming ``encrypted`` messages are decrypted first and
+    handed on as ordinary ``chat`` messages (with ``"encrypted": True``), so
+    the CLI and the web UI never touch ciphertext. A message that fails
+    decryption becomes ``integrity_error``; a plaintext ``chat`` becomes
+    ``downgrade_rejected``. Neither is ever shown as a chat line.
     """
 
     def __init__(
@@ -60,6 +80,7 @@ class ChatClient:
         on_message: Callable[[dict], None],
         peer: str | None = None,
         keys_dir: str = "keys",
+        mode: str | None = None,
     ):
         self.host = host
         self.port = port
@@ -68,16 +89,27 @@ class ChatClient:
         self._sock: socket.socket | None = None
         self._closing = False  # set by close(), so we don't report our own hang-up
 
-        # Secure-session state (UC-3). When peer is None the client stays in the
-        # plaintext mode used by UC-1; when it is set, connect() runs the X25519
-        # handshake and chat is blocked until a session key exists.
+        # Mode: e2ee needs a peer to agree a key with. If not given, a client
+        # with a peer is e2ee and one without is plain (the UC-1 behaviour).
+        if mode is None:
+            mode = "e2ee" if peer is not None else "plain"
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}")
+        if mode == "e2ee" and peer is None:
+            raise ValueError("e2ee mode needs a peer to set up a session key with")
+        self.mode = mode
+        self.secure = mode == "e2ee"
+
+        # Secure-session state (UC-3). In plain mode there is no handshake; in
+        # e2ee mode connect() runs the X25519 handshake and chat is blocked
+        # until a session key exists.
         self.peer = peer
         self.session_ready = threading.Event()
         self.session_key: bytes | None = None
         self.peer_public: str | None = None
         self._hs_lock = threading.Lock()
         self._send_lock = threading.Lock()  # one frame at a time on the shared socket
-        if peer is not None:
+        if self.secure:
             self._my_private = load_or_create_keypair(username, keys_dir)
             self._my_public_b64 = public_key_b64(self._my_private)
 
@@ -115,7 +147,7 @@ class ChatClient:
         # is offline the server replies user_offline and drops it — harmless,
         # because the later-joining peer's own send reaches us and triggers the
         # exchange. (US-4 AC1)
-        if self.peer is not None:
+        if self.secure:
             self._send_pubkey(reply=False)  # announce our key to the peer
 
     def _send(self, msg: dict) -> None:
@@ -136,12 +168,52 @@ class ChatClient:
     def send_chat(self, to: str, text: str) -> None:
         """Send one chat message. Raises OSError if the connection is gone.
 
-        In secure mode, raises SessionNotReady until the handshake completes, so
+        In e2ee mode, raises SessionNotReady until the handshake completes, so
         no plaintext chat is sent before the session key exists (US-4 AC1).
+        Then the text goes out as an ``encrypted`` message: AES-256-GCM with a
+        fresh nonce, bound to sender and recipient through the AAD (US-5 AC1).
         """
-        if self.peer is not None and not self.session_ready.is_set():
+        if not self.secure:
+            self._send({"type": "chat", "to": to, "text": text})
+            return
+        if to != self.peer:
+            # The session key is shared with our peer only; anyone else couldn't read it.
+            raise ValueError(f"e2ee mode only sends to the session peer ({self.peer})")
+        with self._hs_lock:
+            key = self.session_key if self.session_ready.is_set() else None
+        if key is None:
             raise SessionNotReady("secure session not established yet")
-        self._send({"type": "chat", "to": to, "text": text})
+        nonce, ciphertext = encrypt_message(key, text, chat_aad(self.username, to))
+        self._send({"type": "encrypted", "to": to, "nonce": nonce, "ciphertext": ciphertext})
+
+    def _open_encrypted(self, msg: dict) -> dict:
+        """Turn an incoming ``encrypted`` message into what the user should see.
+
+        Returns a decrypted ``chat`` message, or ``integrity_error`` if it was
+        tampered with, encrypted under another key, relabelled, malformed, or
+        arrived before we had a session key (US-6 AC2, T32).
+        """
+        sender = msg.get("from")
+        with self._hs_lock:
+            key = self.session_key if self.session_ready.is_set() else None
+        if key is None or sender != self.peer:
+            return {"type": "integrity_error", "from": sender}
+        try:
+            text = decrypt_message(
+                key,
+                msg.get("nonce"),
+                msg.get("ciphertext"),
+                chat_aad(str(sender), self.username),
+            )
+        except IntegrityError:
+            return {"type": "integrity_error", "from": sender}
+        return {
+            "type": "chat",
+            "from": sender,
+            "to": self.username,
+            "text": text,
+            "encrypted": True,
+        }
 
     def _handle_pubkey(self, msg: dict) -> None:
         """Process a public key from our peer and converge on a session key.
@@ -201,9 +273,24 @@ class ChatClient:
                     continue
                 if msg is None:
                     break  # server closed the connection
-                if self.peer is not None and msg.get("type") == "pubkey":
-                    self._handle_pubkey(msg)  # handshake internals, not shown to the user
-                    continue
+                kind = msg.get("type")
+                if kind in LOCAL_EVENTS:
+                    continue  # spoofed local event from the network: drop it
+                if kind == "chat":
+                    # Only _open_encrypted may mark a message as encrypted; a
+                    # sender-supplied "encrypted" field would fake the 🔒.
+                    msg = {k: v for k, v in msg.items() if k != "encrypted"}
+                if self.secure:
+                    if kind == "pubkey":
+                        self._handle_pubkey(msg)  # handshake internals, not shown to the user
+                        continue
+                    if kind == "encrypted":
+                        msg = self._open_encrypted(msg)
+                    elif kind == "chat":
+                        # No downgrade (T66, US-5 AC5): an e2ee client never shows
+                        # plaintext. Otherwise a MITM could strip the encryption
+                        # and inject readable messages that look genuine.
+                        msg = {"type": "downgrade_rejected", "from": msg.get("from")}
                 self.on_message(msg)
         except Exception:  # noqa: S110 - any failure here means the same thing to the user
             # Usually broken framing (ProtocolError) or a dropped connection
@@ -228,6 +315,13 @@ def format_message(msg: dict) -> str:
     clean = sanitize_for_terminal
     if kind == "chat":
         return f"[{clean(msg.get('from'))}] {clean(msg.get('text'))}"
+    if kind == "integrity_error":
+        return f"! message failed integrity check (from {clean(msg.get('from'))}), dropped"
+    if kind == "downgrade_rejected":
+        return (
+            f"! plaintext message rejected (possible downgrade attack) "
+            f"(from {clean(msg.get('from'))})"
+        )
     if kind == "error":
         return f"! {clean(msg.get('code'))}: {clean(msg.get('message'))}"
     if kind == "disconnected":
@@ -244,7 +338,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=port_number, default=DEFAULT_PORT)
     parser.add_argument("--user", required=True, help="your username")
     parser.add_argument("--peer", required=True, help="who your messages go to")
-    parser.add_argument("--mode", choices=["plain"], default="plain")
+    parser.add_argument(
+        "--mode",
+        choices=MODES,
+        default="e2ee",
+        help="e2ee: encrypt every message (default); plain: UC-1 plaintext, for the demo",
+    )
     args = parser.parse_args(argv)
 
     lost = threading.Event()
@@ -256,7 +355,9 @@ def main(argv: list[str] | None = None) -> None:
         print(format_message(msg), flush=True)
 
     try:
-        client = ChatClient(args.host, args.port, args.user, on_message=show, peer=args.peer)
+        client = ChatClient(
+            args.host, args.port, args.user, on_message=show, peer=args.peer, mode=args.mode
+        )
         client.connect()
     except ValueError:  # an unreadable / truncated key file
         print(
@@ -272,13 +373,18 @@ def main(argv: list[str] | None = None) -> None:
         print("! cancelled", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Connected as {args.user}. Messages go to {args.peer}. Type /quit to leave.")
+    print(
+        f"Connected as {args.user} ({args.mode} mode). Messages go to {args.peer}. "
+        "Type /quit to leave."
+    )
+    if args.mode == "plain":
+        print("! plain mode: messages are NOT encrypted", flush=True)
     try:
         # Wait for the secure session before accepting input, so no line is typed
         # (and dropped) before the handshake finishes. The "* secure session ready"
         # line is printed by show() when it completes. A Ctrl+C here is caught
         # below so we still close() cleanly.
-        if client.peer is not None and not client.session_ready.wait(HANDSHAKE_TIMEOUT_SECONDS):
+        if client.secure and not client.session_ready.wait(HANDSHAKE_TIMEOUT_SECONDS):
             print("! secure session not established yet (is your peer online?)", flush=True)
         while not lost.is_set():
             try:

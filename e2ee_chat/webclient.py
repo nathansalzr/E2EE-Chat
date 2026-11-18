@@ -2,8 +2,10 @@
 
 Serves a small local web page and bridges it to a ChatClient over the existing
 protocol and crypto. The browser is just a display; all the real work (the
-X25519 handshake, and AES-GCM once UC-4 lands) happens in Python. No new
-dependencies — only the standard library.
+X25519 handshake and AES-256-GCM encryption) happens in Python; the browser
+only ever sees decrypted text from its own ChatClient. No new dependencies —
+only the standard library. --mode plain gives the unencrypted UC-1 chat for the
+demo's "before" step.
 
 Run one per participant, each on its own web port:
 
@@ -22,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from e2ee_chat.client import ChatClient, RegistrationError, SessionNotReady
+from e2ee_chat.client import MODES, ChatClient, RegistrationError, SessionNotReady
 from e2ee_chat.protocol import DEFAULT_PORT, MessageTooLarge, port_number
 
 
@@ -30,10 +32,12 @@ class ChatApp:
     """Holds the participant's ChatClient and fans every event out to the open
     browser tabs (there is usually one, but a refresh opens another)."""
 
-    def __init__(self, user: str, peer: str):
+    def __init__(self, user: str, peer: str, mode: str = "e2ee"):
         self.user = user
         self.peer = peer
-        self.ready = False  # True once the secure session is established
+        self.mode = mode
+        # True once we can chat: after the handshake in e2ee mode, at once in plain mode.
+        self.ready = mode == "plain"
         self._subscribers: list[queue.Queue] = []
         self._history: list[dict] = []
         self._lock = threading.Lock()
@@ -64,7 +68,24 @@ class ChatApp:
     def on_message(self, msg: dict) -> None:
         kind = msg.get("type")
         if kind == "chat":
-            self.publish({"kind": "chat", "from": msg.get("from"), "text": msg.get("text")})
+            event = {"kind": "chat", "from": msg.get("from"), "text": msg.get("text")}
+            if msg.get("encrypted") and self.mode == "e2ee":
+                event["encrypted"] = True  # arrived as ciphertext and passed the GCM check
+            self.publish(event)
+        elif kind == "integrity_error":
+            self.publish(
+                {
+                    "kind": "error",
+                    "text": f"message failed integrity check (from {msg.get('from')}), dropped",
+                }
+            )
+        elif kind == "downgrade_rejected":
+            self.publish(
+                {
+                    "kind": "error",
+                    "text": "plaintext message rejected (possible downgrade attack)",
+                }
+            )
         elif kind == "secure_session":
             self.ready = True
             self.publish({"kind": "secure", "key_hash": msg.get("key_hash")})
@@ -101,7 +122,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/" or self.path.startswith("/index"):
-            page = _PAGE.replace("__USER__", self.app.user).replace("__PEER__", self.app.peer)
+            page = (
+                _PAGE.replace("__USER__", self.app.user)
+                .replace("__PEER__", self.app.peer)
+                .replace("__MODE__", self.app.mode)
+            )
             self._send_bytes(200, "text/html; charset=utf-8", page.encode("utf-8"))
         elif self.path == "/events":
             self._stream_events()
@@ -130,7 +155,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         # Echo our own message locally so it shows in our window (the server
         # relays it to the peer, not back to us).
-        self.app.publish({"kind": "chat", "from": self.app.user, "text": text, "mine": True})
+        event = {"kind": "chat", "from": self.app.user, "text": text, "mine": True}
+        if self.app.mode == "e2ee":
+            event["encrypted"] = True
+        self.app.publish(event)
         self._json({"ok": True})
 
     def _stream_events(self) -> None:
@@ -168,11 +196,24 @@ def main(argv: list[str] | None = None) -> None:
         default=8000,
         help="local port to serve this participant's window on",
     )
+    parser.add_argument(
+        "--mode",
+        choices=MODES,
+        default="e2ee",
+        help="e2ee: encrypt every message (default); plain: UC-1 plaintext, for the demo",
+    )
     parser.add_argument("--no-open", action="store_true", help="don't open a browser automatically")
     args = parser.parse_args(argv)
 
-    app = ChatApp(args.user, args.peer)
-    client = ChatClient(args.host, args.port, args.user, on_message=app.on_message, peer=args.peer)
+    app = ChatApp(args.user, args.peer, args.mode)
+    client = ChatClient(
+        args.host,
+        args.port,
+        args.user,
+        on_message=app.on_message,
+        peer=args.peer,
+        mode=args.mode,
+    )
     app.client = client
     try:
         client.connect()

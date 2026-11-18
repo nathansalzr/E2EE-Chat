@@ -80,7 +80,7 @@ python -m e2ee_chat.client --user alice --peer bob
 python -m e2ee_chat.client --user bob --peer alice
 ```
 
-Type a line in Alice's terminal and press Enter; it shows up in Bob's as `[alice] ...`. Type `/quit` (or press Ctrl+C) to leave, and press Ctrl+C in the server terminal to stop it.
+Both clients first print `* secure session ready (key …)`; the hash matches on both sides. Then type a line in Alice's terminal and press Enter; it shows up in Bob's as `[alice] ...`, encrypted end to end on the way. Type `/quit` (or press Ctrl+C) to leave, and press Ctrl+C in the server terminal to stop it.
 
 | Option | Meaning | Default |
 |---|---|---|
@@ -88,7 +88,7 @@ Type a line in Alice's terminal and press Enter; it shows up in Bob's as `[alice
 | `--port` | Port number | `5050` |
 | `--user` | Your username (1-20 letters, digits, `_` or `-`) | required |
 | `--peer` | Who your messages go to | required |
-| `--mode` | `plain` for now; `e2ee` arrives in UC-4 | `plain` |
+| `--mode` | `e2ee` encrypts every message (UC-4); `plain` is the unencrypted UC-1 chat, kept for the demo | `e2ee` |
 
 By default the server only accepts connections from the same computer. To chat between two laptops, see [`docs/two-machine-setup.md`](docs/two-machine-setup.md).
 
@@ -118,14 +118,14 @@ python -m e2ee_chat.mitm --mode log
 
 You should see `[mitm] mode=log listening on 127.0.0.1:6060, forwarding to 127.0.0.1:5050`.
 
-**3. Alice and 4. Bob** — same as before, but pointed at the attacker's port with `--port 6060`:
+**3. Alice and 4. Bob**: same as before, but pointed at the attacker's port with `--port 6060` and in **plain** mode (the "before" picture):
 
 ```bash
-python -m e2ee_chat.client --port 6060 --user alice --peer bob
+python -m e2ee_chat.client --port 6060 --mode plain --user alice --peer bob
 ```
 
 ```bash
-python -m e2ee_chat.client --port 6060 --user bob --peer alice
+python -m e2ee_chat.client --port 6060 --mode plain --user bob --peer alice
 ```
 
 Now chat between Alice and Bob. The messages go through fine, but the attacker terminal prints each one and **writes it to `intercepted.log` in the folder you ran the MITM from** — in readable plaintext. That log is gitignored and must never be committed.
@@ -135,12 +135,46 @@ Now chat between Alice and Bob. The messages go through fine, but the attacker t
 | `--port` | Port the attacker listens on (clients connect here) | `6060` |
 | `--host` | Address the attacker listens on | `127.0.0.1` |
 | `--server-host` / `--server-port` | The real server to forward to | `127.0.0.1` / `5050` |
-| `--mode` | `log` reads and records every message (`tamper` and `swap-keys` arrive in UC-4/UC-5) | `log` |
+| `--mode` | `log` reads and records every message; `tamper` also flips one bit of each encrypted message (UC-4); `swap-keys` arrives in UC-5 | `log` |
 | `--log-file` | Where to write intercepted traffic | `intercepted.log` |
 
 To show the traffic at the packet level (US-2 AC5), run **Wireshark** on the loopback adapter with the filter `tcp.port == 6060` while you chat; the message text appears right in the TCP payload. Save the screenshots in `docs/05_Evidence/`.
 
 Full write-up: [`docs/uc2-walkthrough.md`](docs/uc2-walkthrough.md).
+
+## Running encrypted chat against the attack (UC-4)
+
+Same four terminals and the same start order as the attack above. The only change is the clients' mode.
+
+**1. Server** and **2. attacker** exactly as before (`python -m e2ee_chat.mitm --mode log`).
+
+**3. Alice and 4. Bob** in the default **e2ee** mode, still through the attacker's port:
+
+```bash
+python -m e2ee_chat.client --port 6060 --user alice --peer bob
+```
+
+```bash
+python -m e2ee_chat.client --port 6060 --user bob --peer alice
+```
+
+Chat still works. Now the attacker terminal and `intercepted.log` show only `{'type': 'encrypted', 'nonce': '…', 'ciphertext': '…'}`, base64 with no readable words. In Wireshark (`tcp.port == 6060`) the payload is the same base64 noise.
+
+**Tamper test (US-6):** stop the attacker (Ctrl+C), restart it with
+
+```bash
+python -m e2ee_chat.mitm --mode tamper
+```
+
+and reconnect both clients. Every encrypted message now has one bit flipped on the way. Bob sees `! message failed integrity check (from alice), dropped`, the message is never displayed, and the chat stays connected. The attacker log shows each original frame next to its `TAMPERED` copy.
+
+**Downgrade check (T66):** an e2ee client never displays a plaintext message. It prints `! plaintext message rejected (possible downgrade attack)` instead.
+
+The web UI takes the same `--mode e2ee|plain` flag and shows a 🔒 on encrypted messages. Full write-up: [`docs/uc4-walkthrough.md`](docs/uc4-walkthrough.md).
+
+## Demo for class
+
+The step-by-step live demo, covering every command, what the audience should see, and the real-world attack each step maps to, is in [`docs/demo-guide.md`](docs/demo-guide.md). The narrated video script is [`docs/demo-script.md`](docs/demo-script.md).
 
 ## Running the checks (same as CI)
 
