@@ -62,7 +62,9 @@ The server forwards these three types the same way, by `to`. It doesn't interpre
 | `pubkey` | UC-3 | `{"type": "pubkey", "to": "bob", "key": "<base64 X25519 public key>"}` |
 | `encrypted` | UC-4 | `{"type": "encrypted", "to": "bob", "nonce": "<base64>", "ciphertext": "<base64>"}` |
 
-Because the server never needs to understand `pubkey` or `encrypted`, UC-3 and UC-4 only change the clients.
+Because the server never needs to understand `pubkey` or `encrypted`, UC-3, UC-4 and UC-5 only change the clients.
+
+**Keys are unauthenticated on the wire (UC-5).** The server and a MITM can read or replace a `pubkey`, which is the key-swap attack. The clients defend against it above the protocol: they show a SHA-256 fingerprint of each key for an out-of-band comparison, and they pin a peer's key the first time (`keys/known_peers/<me>/<peer>.pub`, gitignored) and alarm if it later changes.
 
 ## Encrypted messages (UC-4)
 

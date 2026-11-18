@@ -16,8 +16,8 @@ A shot-by-shot script for the recorded demo (and the live office-hours demo). It
 | 3 The attack (UC-2) | `mitm --mode log` + Wireshark | ✅ (`v0.2-attack`) |
 | 4 Encryption defeats it (UC-4) | `client --mode e2ee` | ✅ (`v0.3-e2ee`) |
 | 5 Tamper is caught (US-6) | `mitm --mode tamper` | ✅ (`v0.3-e2ee`) |
-| 6 Key-swap beats naive E2EE (US-7) | `mitm --mode swap-keys` | ⏳ after UC-5 |
-| 7 Fingerprints catch it (US-7) | `/fingerprint`, `/abort` | ⏳ after UC-5 |
+| 6 Key-swap beats naive E2EE (US-7) | `mitm --mode swap-keys` | ✅ (`v1.0`) |
+| 7 Fingerprints catch it (US-7) | `/fingerprint`, `/abort` | ✅ (`v1.0`) |
 | 8 CIA wrap + conclusion | slide | ✅ |
 
 > Scenes 1–5 and 8 can be recorded now. Add 6–7b when UC-5 lands. Shooting in this order also lets each stage reuse the same window layout.
@@ -104,9 +104,9 @@ Arrange terminals so the camera tells the story left-to-right:
   > "Encryption hides the message — but could the attacker still *change* it? AES-GCM adds an authentication tag. We flip a single byte in transit, and Bob's client rejects it outright instead of showing altered text. That's **integrity**."
 - **CIA callout:** ✓ Integrity.
 
-## Scene 6 — Key-swap beats *naive* E2EE (US-7)  *(~1.5 min)*  — Speaker: Crypto lead  ⏳
+## Scene 6 — Key-swap beats *naive* E2EE (US-7)  *(~1.5 min)*  — Speaker: Crypto lead
 - **Screen-record:** attacker in swap-keys mode, nobody verifying; attacker reading the "encrypted" chat again.
-- **On-screen action (planned):**
+- **On-screen action:**
   ```
   python -m e2ee_chat.mitm --mode swap-keys
   ```
@@ -116,15 +116,15 @@ Arrange terminals so the camera tells the story left-to-right:
 - **CIA callout:** ✗ Authenticity broken — encryption isn't enough on its own.
 
 ## Scene 7 — Fingerprints catch the swap (US-7)  *(~1.5 min)*  — Speaker: Nathan
-- **Screen-record:** same swap-keys attack, but Alice and Bob run `/fingerprint` and compare out-of-band.  ⏳
-- **On-screen action (planned):** each client prints its own and the peer's fingerprint; Alice reads hers aloud (the "second channel"); they **don't match**; the user runs `/abort`.
+- **Screen-record:** same swap-keys attack, but Alice and Bob run `/fingerprint` and compare out-of-band.
+- **On-screen action:** each client prints its own and the peer's fingerprint; Alice reads hers aloud (the "second channel"); they **don't match**; the user runs `/abort`.
 - **Narration:**
   > "The fix is to verify *who holds the key*. Each client shows a short fingerprint of the keys in use. Alice and Bob compare them over a channel the attacker doesn't control — in person or by phone. With the attacker swapping keys, the fingerprints don't match, so they know they're being intercepted and abort. That's **authenticity** — and it's the piece that makes the encryption actually trustworthy."
 - **CIA callout:** ✓ Authenticity.
 
-## Scene 7b — The ongoing alarm: trust-on-first-use (US-7)  *(~1 min)*  — Speaker: Nathan  ⏳
+## Scene 7b — The ongoing alarm: trust-on-first-use (US-7)  *(~1 min)*  — Speaker: Nathan
 - **Screen-record:** Alice and Bob chat once cleanly (key pinned), then reconnect with the peer's key changed — the client fires a "key changed — re-verify" warning on its own.
-- **On-screen action (planned):** show a clean session (no warning), then a reconnect where the peer's pinned key no longer matches → the app alarms and asks to re-verify before continuing.
+- **On-screen action:** show a clean session (no warning), then a reconnect where the peer's pinned key no longer matches → the app alarms and asks to re-verify before continuing.
 - **Narration:**
   > "Verifying once is good, but you shouldn't have to do it every time. The app **pins** your contact's key the first time and watches it. If that key ever changes — a man-in-the-middle sliding in later, or just a new phone — you get an alarm and re-check. Same idea as SSH's 'host key changed' warning. Encryption plus a continuous 'is this still the same trusted key?' check."
 - **CIA callout:** ✓ Authenticity (continuous).
@@ -145,4 +145,4 @@ Arrange terminals so the camera tells the story left-to-right:
 - [ ] Captions or a lower-third naming the current use case, for the grader.
 - [ ] Export a backup copy; store it with the evidence, not only on one laptop (US-10 AC2).
 
-*Status: scenes 1–5 and 8 are recordable against the `v0.3-e2ee` build. Scenes 6–7b become recordable once UC-5 is implemented.*
+*Status: every scene is recordable against the `v1.0` build (UC-1 through UC-5).*

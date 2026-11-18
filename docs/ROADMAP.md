@@ -267,9 +267,11 @@ Walkthrough: [`uc4-walkthrough.md`](uc4-walkthrough.md).
 4. **T69 Trust-on-first-use (Crypto lead):** pin each peer's public key on first contact (e.g. `known_peers/<peer>.key`), compare it on every reconnect, and on a change warn clearly and require re-verification before continuing.
 
 **Done when:**
-- [ ] With `--mode swap-keys` and no fingerprint check, the attacker reads the chat.
-- [ ] With the check, A's and B's fingerprints don't match, and `/abort` ends the session.
-- [ ] A peer whose key changes between sessions triggers a clear "key changed — re-verify" warning (TOFU), and a run where the key is unchanged stays silent.
+- [x] With `--mode swap-keys` and no fingerprint check, the attacker reads the chat.
+- [x] With the check, A's and B's fingerprints don't match, and `/abort` ends the session.
+- [x] A peer whose key changes between sessions triggers a clear "key changed — re-verify" warning (TOFU), and a run where the key is unchanged stays silent.
+
+Walkthrough: [`uc5-walkthrough.md`](uc5-walkthrough.md).
 
 **Evidence (T37):** a mismatched-fingerprint screenshot, a "key changed" alarm screenshot, and the key-swap log.
 

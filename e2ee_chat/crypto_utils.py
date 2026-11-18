@@ -1,4 +1,5 @@
-"""Crypto for end-to-end encryption: key exchange (UC-3) and message encryption (UC-4).
+"""Crypto for end-to-end encryption: key exchange (UC-3), message encryption (UC-4)
+and key pinning (UC-5).
 
 All crypto lives here so it can be unit-tested without sockets.
 Primitives come only from the `cryptography` library — no homemade crypto.
@@ -8,6 +9,7 @@ import base64
 import binascii
 import hashlib
 import os
+import re
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import serialization
@@ -23,6 +25,15 @@ _RAW = serialization.Encoding.Raw
 _RAW_PRIV = serialization.PrivateFormat.Raw
 _RAW_PUB = serialization.PublicFormat.Raw
 _NO_ENC = serialization.NoEncryption()
+
+
+def generate_keypair() -> X25519PrivateKey:
+    """A fresh in-memory X25519 keypair, never written to disk.
+
+    Used for a throwaway key, e.g. the attacker's own keypair in the UC-5
+    key-swap demo. No file side effects, so nothing to clean up.
+    """
+    return X25519PrivateKey.generate()
 
 
 def load_or_create_keypair(username: str, keys_dir: str = "keys") -> X25519PrivateKey:
@@ -144,3 +155,51 @@ def decrypt_message(key: bytes, nonce_b64: object, ciphertext_b64: object, aad: 
         return plaintext.decode("utf-8")
     except (InvalidTag, UnicodeDecodeError) as exc:
         raise IntegrityError("authentication failed") from exc
+
+
+# --- UC-5: trust-on-first-use key pinning (T69) ---------------------------
+
+PIN_NEW = "new"  # first time we've seen this contact: key pinned now
+PIN_MATCH = "pinned"  # same key as last time: nothing to worry about
+PIN_CHANGED = "changed"  # different key than last time: possible MITM, re-verify
+
+_SAFE_NAME = re.compile(r"[A-Za-z0-9_-]{1,20}")  # same rule as server usernames
+
+
+def _pin_path(me: str, peer: str, keys_dir: str) -> str:
+    # Names become path parts, so refuse anything that isn't a valid username
+    # (no "..", slashes or drive letters sneaking out of keys/).
+    for name in (me, peer):
+        if not _SAFE_NAME.fullmatch(name):
+            raise ValueError(f"not a valid username: {name!r}")
+    return os.path.join(keys_dir, "known_peers", me, f"{peer}.pub")
+
+
+def pin_key(me: str, peer: str, peer_public_b64: str, keys_dir: str = "keys") -> None:
+    """Remember peer's public key as the trusted one (first contact, or /trust)."""
+    path = _pin_path(me, peer, keys_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="ascii") as f:
+        f.write(peer_public_b64)
+
+
+def check_pin(me: str, peer: str, peer_public_b64: str, keys_dir: str = "keys") -> str:
+    """Compare a peer's key with the one we pinned before (the SSH known_hosts idea).
+
+    Returns PIN_NEW (and pins it) the first time, PIN_MATCH when it's the same
+    key, PIN_CHANGED when it differs. A pin file we can't read counts as
+    changed: when in doubt, alarm rather than trust.
+
+    TOFU can't protect the very first contact (whatever key we see first gets
+    pinned), which is why users still compare fingerprints once out-of-band.
+    """
+    path = _pin_path(me, peer, keys_dir)
+    if not os.path.exists(path):
+        pin_key(me, peer, peer_public_b64, keys_dir)
+        return PIN_NEW
+    try:
+        with open(path, encoding="ascii") as f:
+            pinned = f.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return PIN_CHANGED
+    return PIN_MATCH if pinned == peer_public_b64 else PIN_CHANGED

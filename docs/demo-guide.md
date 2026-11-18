@@ -223,14 +223,62 @@ python -m e2ee_chat.webclient --user bob --peer alice --web-port 8002
 
 ---
 
-## Coming in UC-5: the attack that still works
+## Step 7: The attack that beats naive encryption (UC-5)
 
-Say this honestly before Q&A. It's our strongest answer to "so is it unbreakable?"
+This is the strongest part of the demo. Encryption alone isn't enough if nobody checks *whose* key they're using.
 
-- **Key-swap MITM (`mitm --mode swap-keys`, coming next):** our key exchange isn't authenticated yet. An *active* attacker can hand each side its own public key, decrypt everything, and re-encrypt it. Both sides would still see "secure session ready".
-- **The fix is fingerprint verification (`/fingerprint`)** plus a **trust-on-first-use** alarm when a contact's key changes.
-- **Real world:** this is exactly why Signal shows safety numbers, WhatsApp shows "security code changed", and SSH warns "REMOTE HOST IDENTIFICATION HAS CHANGED".
-- **Security+ tie-in:** authenticity, PKI and certificate validation (TLS solves this with certificate authorities; messaging apps use fingerprint checks).
+Start fresh so nothing is pre-trusted:
+```powershell
+Remove-Item keys\known_peers -Recurse -ErrorAction SilentlyContinue
+```
+**Attacker**, now swapping keys:
+```powershell
+python -m e2ee_chat.mitm --mode swap-keys
+```
+**Alice and Bob** in e2ee mode through port 6060:
+```powershell
+python -m e2ee_chat.client --port 6060 --user alice --peer bob
+```
+```powershell
+python -m e2ee_chat.client --port 6060 --user bob --peer alice
+```
+
+Alice sends `Transfer $5000 to account 8891`.
+
+**The class sees:**
+- Both still say `* secure session ready`, so nothing looks wrong, but their key hashes **differ**.
+- The attacker terminal prints `DECRYPTED alice->bob: Transfer $5000 to account 8891`. Encryption didn't help, because each side is encrypting *to the attacker*.
+
+**Now the fix.** Both run `/fingerprint` and read the lines aloud to each other (the "out-of-band" channel):
+- Alice's "bob" fingerprint will **not** match Bob's own "your fingerprint" line.
+- A mismatch means someone swapped the keys. Either user runs `/abort`.
+
+**Real-world cases:**
+- **Signal "safety numbers", WhatsApp "security code":** the exact same fingerprint comparison, so two people can confirm no one is in the middle.
+- **SSH host keys:** the first time you connect, SSH pins the server's key; this is the fingerprint you're asked to accept.
+- **TLS / HTTPS:** solves the same problem with certificate authorities instead of a manual check — a trusted third party vouches for the key.
+
+**Security+ tie-in:** authenticity, PKI, certificate validation, out-of-band verification.
+
+## Step 8: The ongoing alarm — trust-on-first-use (UC-5)
+
+Verifying once is good; you shouldn't have to do it every time. The client **pins** a contact's key the first time and watches it.
+
+1. First, a clean session so the real keys get pinned. Run the attacker in plain log mode:
+   ```powershell
+   python -m e2ee_chat.mitm --mode log
+   ```
+   Connect Alice and Bob (e2ee, port 6060), chat once. Each shows `* new contact …: key pinned`.
+2. Stop the attacker, restart it swapping keys, and reconnect:
+   ```powershell
+   python -m e2ee_chat.mitm --mode swap-keys
+   ```
+
+**The class sees:** both clients fire `!!! WARNING: bob's key has CHANGED since your last session`, sending is blocked, and incoming messages are hidden until the user runs `/trust` (after re-verifying) or `/abort`. The attacker never sees the next message.
+
+**Real-world case:** this is SSH's `REMOTE HOST IDENTIFICATION HAS CHANGED!` warning, and WhatsApp's "your security code with X changed". It catches a man-in-the-middle who shows up *after* first contact, or flags a legitimate reinstall so you re-verify.
+
+In the **web UI**, the same change shows a red alarm banner with **Trust new key** and **Abort** buttons, and the message box is disabled until you choose.
 
 ## Honest limitations (expect these questions)
 

@@ -9,6 +9,8 @@ import socket
 import threading
 import time
 
+import pytest
+
 from e2ee_chat import mitm
 from e2ee_chat.client import ChatClient
 from e2ee_chat.server import ChatServer
@@ -104,6 +106,7 @@ def _start_mitm_mode(listen_port, server_port, log_file, mode):
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", listen_port))
     listener.listen()
+    swapper = mitm.KeySwapper() if mode == "swap-keys" else None
 
     def accept_loop():
         while True:
@@ -113,7 +116,7 @@ def _start_mitm_mode(listen_port, server_port, log_file, mode):
                 return
             threading.Thread(
                 target=mitm.handle_client,
-                args=(client_sock, "127.0.0.1", server_port, log_file, mode),
+                args=(client_sock, "127.0.0.1", server_port, log_file, mode, swapper),
                 daemon=True,
             ).start()
 
@@ -193,3 +196,122 @@ def test_tamper_flips_exactly_one_byte_and_ignores_other_messages():
         {"type": "encrypted", "to": "bob", "ciphertext": "!!not base64!!"},
     ):
         assert mitm.tamper(msg) is msg
+
+
+# --- UC-5: key-substitution attack and the defenses (T35, US-7) -----------
+
+from e2ee_chat.client import KeyNotTrusted  # noqa: E402
+from e2ee_chat.crypto_utils import PIN_CHANGED  # noqa: E402
+
+
+def _swap_session(tmp_path, keys_dir=None):
+    """Server + MITM(swap-keys) + two e2ee clients, both through the MITM."""
+    server_port, mitm_port = _free_port(), _free_port()
+    log_file = str(tmp_path / "intercepted.log")
+    server = ChatServer(port=server_port)
+    server.start()
+    _wait_port(server_port)
+    listener = _start_mitm_mode(mitm_port, server_port, log_file, "swap-keys")
+    _wait_port(mitm_port)
+    kd = keys_dir or str(tmp_path / "keys")
+    a_inbox: queue.Queue = queue.Queue()
+    b_inbox: queue.Queue = queue.Queue()
+    alice = ChatClient("127.0.0.1", mitm_port, "alice", a_inbox.put, peer="bob", keys_dir=kd)
+    bob = ChatClient("127.0.0.1", mitm_port, "bob", b_inbox.put, peer="alice", keys_dir=kd)
+    alice.connect()
+    bob.connect()
+    assert alice.session_ready.wait(3) and bob.session_ready.wait(3)
+
+    def stop():
+        alice.close()
+        bob.close()
+        listener.close()
+        server.stop()
+
+    return alice, a_inbox, bob, b_inbox, log_file, stop
+
+
+def test_swap_keys_lets_the_attacker_read_the_chat(tmp_path):
+    # AC2: with nobody checking fingerprints, the MITM reads the "encrypted" chat.
+    alice, a_inbox, bob, b_inbox, log_file, stop = _swap_session(tmp_path)
+    try:
+        alice.send_chat("bob", "transfer the money")
+        assert _next(b_inbox, "chat")["text"] == "transfer the money"  # bob still reads it
+    finally:
+        stop()
+    log = open(log_file, encoding="utf-8").read()
+    assert "DECRYPTED alice->bob: transfer the money" in log  # the attacker read it too
+
+
+def test_swap_keys_makes_fingerprints_disagree(tmp_path):
+    # AC3: alice's view of bob's key is really the attacker's, so it does not
+    # match the fingerprint bob computes of his own key.
+    alice, a_inbox, bob, b_inbox, _, stop = _swap_session(tmp_path)
+    try:
+        _, alice_sees_bob = alice.fingerprints()
+        bob_sees_self, _ = bob.fingerprints()
+        assert alice_sees_bob != bob_sees_self  # mismatch reveals the swap
+        assert alice.session_key != bob.session_key  # each shares a key with the attacker
+    finally:
+        stop()
+
+
+def test_tofu_alarm_blocks_the_swap_after_a_clean_session(tmp_path):
+    # Pin the real keys in a clean (log-mode) session, then the swap trips TOFU.
+    kd = str(tmp_path / "keys")
+    s_port, m_port = _free_port(), _free_port()
+    server = ChatServer(port=s_port)
+    server.start()
+    _wait_port(s_port)
+    clean = _start_mitm_mode(m_port, s_port, str(tmp_path / "clean.log"), "log")
+    _wait_port(m_port)
+    a = ChatClient("127.0.0.1", m_port, "alice", lambda m: None, peer="bob", keys_dir=kd)
+    b = ChatClient("127.0.0.1", m_port, "bob", lambda m: None, peer="alice", keys_dir=kd)
+    a.connect()
+    b.connect()
+    assert a.session_ready.wait(3) and b.session_ready.wait(3)
+    assert a.trust == "new" and a.trusted.is_set()
+    a.close()
+    b.close()
+    clean.close()
+    deadline = time.time() + 2
+    while ("alice" in server.online_users() or "bob" in server.online_users()) and (
+        time.time() < deadline
+    ):
+        time.sleep(0.02)
+    server.stop()
+
+    # Now the same contacts reconnect, but the attacker swaps keys.
+    alice, a_inbox, bob, b_inbox, log_file, stop = _swap_session(tmp_path, keys_dir=kd)
+    try:
+        assert _next(a_inbox, "secure_session")["trust"] == PIN_CHANGED  # alarm fired
+        assert _next(b_inbox, "secure_session")["trust"] == PIN_CHANGED
+        assert not alice.trusted.is_set() and not bob.trusted.is_set()
+        with pytest.raises(KeyNotTrusted):
+            alice.send_chat("bob", "secret that must not leak")
+    finally:
+        stop()
+    assert "secret that must not leak" not in open(log_file, encoding="utf-8").read()
+
+
+def test_swapper_rewrite_leaves_unknown_messages_alone():
+    import e2ee_chat.mitm as mitm_mod
+
+    sw = mitm_mod.KeySwapper()
+    chat = {"type": "chat", "to": "bob", "text": "hi"}
+    assert sw.rewrite(chat, "alice", "x.log") is chat  # not an encrypted/pubkey frame
+    # a pubkey frame is rewritten to the attacker's key
+    out = sw.rewrite({"type": "pubkey", "to": "bob", "key": "AAAA"}, "alice", "x.log")
+    assert out["key"] == sw.pub_b64
+
+
+def test_swapper_tolerates_non_string_usernames():
+    # A hostile/garbled frame with a list where a username goes must not crash.
+    sw = mitm.KeySwapper()
+    assert sw.rewrite({"type": "encrypted", "to": [], "nonce": "x"}, "alice", "x.log")["to"] == []
+    assert sw.rewrite({"type": "pubkey", "to": "bob", "key": "AAAA"}, ["list"], "x.log") == {
+        "type": "pubkey",
+        "to": "bob",
+        "key": "AAAA",
+    }  # non-string sender: forwarded unchanged
+    sw.note_pubkey(["not", "a", "str"], "AAAA")  # must not raise / not stored
