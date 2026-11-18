@@ -6,7 +6,6 @@ the public-key handshake but contains no private-key material.
 
 import base64
 import socket
-import threading
 import time
 
 from cryptography.hazmat.primitives import serialization
@@ -36,24 +35,9 @@ def _wait_port(port: int, timeout: float = 3.0) -> None:
 
 
 def _start_mitm(listen_port: int, server_port: int, log_file: str) -> socket.socket:
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", listen_port))
-    listener.listen()
-
-    def accept_loop():
-        while True:
-            try:
-                client_sock, _ = listener.accept()
-            except OSError:
-                return
-            threading.Thread(
-                target=mitm.handle_client,
-                args=(client_sock, "127.0.0.1", server_port, log_file),
-                daemon=True,
-            ).start()
-
-    threading.Thread(target=accept_loop, daemon=True).start()
+    listener, _ = mitm.start_listener(
+        "127.0.0.1", listen_port, "127.0.0.1", server_port, log_file, mode="log"
+    )
     return listener
 
 

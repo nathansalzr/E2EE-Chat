@@ -133,6 +133,38 @@ To make the live demo readable, each participant runs a small **localhost web wi
 
 ---
 
+## Demo: one-command web console (no restarts)
+
+**Date:** 2026-11-19 · **Done by:** Nathan
+
+To run the whole project in the browser like a real messaging app, we added a browser-driven console: `python -m e2ee_chat.demo` starts the server, the attacker and both chat windows, and you drive everything by clicking.
+
+### What we built
+- **Attacker dashboard** (`dashboard.py`) with an `off` mode and **live mode switching** — the MITM mode lives in a shared `AttackState` the relay reads per frame, so Off/Listen/Tamper/Swap-keys change with a button, no restart.
+- **Auto-reconnecting chat windows** (`webclient.py`) with a live Plain/E2EE toggle and a single-flight connect guard, so switching the attack never needs a client restart. Keys persist across reconnects, so the UC-5 key-change alarm fires live.
+- **Saved conversation, encrypted at rest** (`history.py`): `keys/history/<me>/<peer>.log`, AES-256-GCM with a key derived from the user's own private key. A reopened window replays earlier messages and shows a "key changed" bubble inline.
+- Shared web helpers (`webutil.py`) and a one-command launcher (`demo.py`).
+- 44 new tests (174 total), lint and format clean. Full write-up: [`web-demo-walkthrough.md`](web-demo-walkthrough.md).
+
+### What we saw
+- The full flow runs with no restarts: plain → listen → encrypt → tamper → downgrade → swap-keys, then a clean-session-then-swap that fires the key-change alarm and blocks sending while nothing leaks.
+- History survives a refresh and the on-disk file shows no plaintext.
+
+### What didn't work (and how we fixed it)
+- **Auto-reconnect exposed a latent MITM bug.** When a client disconnected, only one of the relay's two pumps noticed; the other stayed blocked, the relay→server socket never closed, and the server kept the username registered — so an instant reconnect hit `username_taken` over and over. Fixed by shutting down both sockets when either pump ends. The terminal demo never reconnected instantly, so it never surfaced.
+- **A mode toggle plus a drop could spawn two clients for one window.** Added a single-flight guard (generation counter + connecting flag under one lock) so there's exactly one client per window.
+- **Code review found six more**, all fixed with a regression test each:
+  - the refactored standalone `mitm.py` ran a second accept loop that silently dropped about half the clients;
+  - a corrupt key file killed a window's connect worker and froze it for good (now it reports the problem and Plain still works);
+  - one non-ASCII byte in a history file broke loading the whole file;
+  - a normal Ctrl+C wrote "session aborted" into the saved history;
+  - after a reconnect the window could show a spurious `user_offline` error;
+  - a mode switch landing mid-send could put a 🔒 on a message that went out in plain.
+- Terminal noise: a browser closing an event stream printed a `ConnectionAbortedError` traceback. Harmless, now silenced.
+- **A leftover terminal MITM silently stole the demo's traffic.** During testing, an old `mitm --mode swap-keys` from a terminal run was still listening on 6060. Because the MITM set `SO_REUSEADDR`, Windows let the demo bind 6060 too and kept sending connections to the old process. The windows talked to an attacker with no dashboard, and its pre-fix code never released connections, so the E2EE toggle hung. Fixed by not setting `SO_REUSEADDR` on Windows for the MITM and the web servers (the relay server already did this). The launcher now stops with "port 6060 for the attacker (MITM) is already in use" and how to find the process. Security+ angle: `SO_REUSEADDR` on Windows enables port hijacking, which is why `SO_EXCLUSIVEADDRUSE` exists.
+
+---
+
 ## UC-4: Send and receive an encrypted message
 
 **Date:** 2026-11-17 · **Done by:** Alex (first AES-GCM version, PR 7), Nathan (rebuild on the UC-3 session key, tamper/downgrade handling, MITM tamper mode, web UI, tests, docs) · **Tag:** `v0.3-e2ee` _(after merge + evidence)_

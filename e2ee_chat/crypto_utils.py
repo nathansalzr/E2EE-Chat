@@ -93,6 +93,21 @@ def derive_session_key(my_private_key: X25519PrivateKey, peer_public_b64: str) -
     ).derive(shared_secret)
 
 
+_STORAGE_INFO = b"e2ee-chat v1 local history"
+
+
+def derive_storage_key(private_key: X25519PrivateKey) -> bytes:
+    """A 32-byte key, derived from this user's own private key, for encrypting
+    their saved chat history at rest (UC web demo).
+
+    It never leaves the machine and isn't shared with anyone, so a copied
+    history file is useless without the user's own ``keys/<user>.key``. HKDF
+    over the private key's raw bytes keeps it separate from the session key.
+    """
+    raw = private_key.private_bytes(_RAW, _RAW_PRIV, _NO_ENC)
+    return HKDF(algorithm=SHA256(), length=32, salt=None, info=_STORAGE_INFO).derive(raw)
+
+
 # --- UC-4: message encryption (AES-256-GCM) -------------------------------
 
 NONCE_BYTES = 12  # 96-bit nonce, the size AES-GCM is designed for

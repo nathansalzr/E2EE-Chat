@@ -6,50 +6,78 @@
 <title>__USER__ — E2EE Chat</title>
 <style>
   :root { color-scheme: light dark; --bg:#0f1220; --panel:#1a1f35; --me:#2b5cff;
-          --them:#2b2f45; --muted:#8a90a6; --ok:#2ecc71; --text:#eef0f6; }
+          --them:#2b2f45; --muted:#8a90a6; --ok:#2ecc71; --warn:#ffb020; --bad:#ff6b6b;
+          --text:#eef0f6; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.45 system-ui,Segoe UI,Roboto,sans-serif;
-         background:var(--bg); color:var(--text); height:100vh;
-         display:flex; justify-content:center; }
+         background:var(--bg); color:var(--text); height:100vh; display:flex;
+         justify-content:center; }
   .app { width:min(560px,100%); display:flex; flex-direction:column; height:100vh; }
   header { padding:12px 16px; background:var(--panel); border-bottom:1px solid #000a; }
-  header .who { font-weight:600; }
-  header .peer { color:var(--muted); font-size:13px; }
+  .top { display:flex; align-items:center; gap:8px; }
+  .who { font-weight:600; }
+  .peer { color:var(--muted); font-size:13px; }
+  .pill { margin-left:auto; font-size:12px; padding:3px 9px; border-radius:999px;
+          background:var(--them); color:var(--muted); }
+  .pill.ok { background:#123a24; color:var(--ok); }
+  .pill.warn { background:#3a2a0d; color:var(--warn); }
+  .pill.bad { background:#3a0d0d; color:var(--bad); }
   #status { margin-top:6px; font-size:13px; color:var(--muted); }
   #status.secure { color:var(--ok); }
-  #log { flex:1; overflow-y:auto; padding:16px;
-         display:flex; flex-direction:column; gap:8px; }
-  .msg { max-width:78%; padding:8px 12px; border-radius:14px;
-         white-space:pre-wrap; word-wrap:break-word; }
-  .them { background:var(--them); align-self:flex-start; border-bottom-left-radius:4px; }
-  .me   { background:var(--me);   align-self:flex-end;   border-bottom-right-radius:4px; }
-  .sys  { align-self:center; color:var(--muted); font-size:13px; }
-  .err  { align-self:center; color:#ff6b6b; font-size:13px; }
-  #status.plain { color:#ffb020; }
-  .fp { margin-top:6px; font-size:12px; color:var(--muted); font-family:ui-monospace,monospace;
+  #status.plain { color:var(--warn); }
+  .controls { margin-top:8px; display:flex; gap:6px; align-items:center; }
+  .controls button { padding:5px 10px; font-size:12px; border-radius:8px; border:1px solid #0006;
+                     background:var(--them); color:#fff; font-weight:600; cursor:pointer; }
+  .controls button.on { background:var(--me); }
+  .controls #reconnect { margin-left:auto; background:#123a24; }
+  .fp { margin-top:8px; font-size:12px; color:var(--muted); font-family:ui-monospace,monospace;
         line-height:1.5; }
   .fp .lbl { color:var(--text); }
   .alarm { margin-top:8px; padding:8px 10px; border-radius:8px; background:#3a0d0d;
-           border:1px solid #ff6b6b; color:#ffd7d7; font-size:13px; }
+           border:1px solid var(--bad); color:#ffd7d7; font-size:13px; }
   .alarm-btns { margin-top:8px; display:flex; gap:8px; }
-  .alarm-btns button { padding:6px 12px; font-size:13px; }
+  .alarm-btns button { padding:6px 12px; font-size:13px; border:0; border-radius:8px;
+                       color:#fff; font-weight:600; cursor:pointer; }
   #trust { background:#c0392b; }
   #abort { background:var(--them); }
-  form { display:flex; gap:8px; padding:12px 16px;
-         background:var(--panel); border-top:1px solid #000a; }
+  #log { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:8px; }
+  .msg { max-width:78%; padding:8px 12px; border-radius:14px; white-space:pre-wrap;
+         word-wrap:break-word; }
+  .them { background:var(--them); align-self:flex-start; border-bottom-left-radius:4px; }
+  .me   { background:var(--me);   align-self:flex-end;   border-bottom-right-radius:4px; }
+  .sys  { align-self:center; color:var(--muted); font-size:13px; text-align:center; }
+  .err  { align-self:center; color:var(--bad); font-size:13px; text-align:center; }
+  .alarmbubble { align-self:center; color:#ffd7d7; background:#3a0d0d; border:1px solid var(--bad);
+                 font-size:13px; padding:6px 12px; border-radius:10px; text-align:center;
+                 max-width:92%; }
+  .divider { align-self:center; color:var(--muted); font-size:12px; margin:4px 0; }
+  .earlier { opacity:0.65; }
+  form { display:flex; gap:8px; padding:12px 16px; background:var(--panel);
+         border-top:1px solid #000a; }
   input { flex:1; padding:10px 12px; border-radius:10px; border:1px solid #000a;
           background:var(--bg); color:var(--text); }
-  button { padding:10px 16px; border:0; border-radius:10px;
-           background:var(--me); color:#fff; font-weight:600; cursor:pointer; }
+  button.send { padding:10px 16px; border:0; border-radius:10px; background:var(--me);
+                color:#fff; font-weight:600; cursor:pointer; }
   button:disabled { opacity:.5; cursor:not-allowed; }
 </style>
 </head>
 <body>
 <div class="app">
   <header>
-    <div class="who">__USER__</div>
-    <div class="peer">chatting with __PEER__</div>
-    <div id="status">connecting…</div>
+    <div class="top">
+      <div>
+        <div class="who">__USER__</div>
+        <div class="peer">chatting with __PEER__</div>
+      </div>
+      <span id="pill" class="pill">connecting…</span>
+    </div>
+    <div id="status"></div>
+    <div class="controls">
+      <span style="color:var(--muted);font-size:12px">mode:</span>
+      <button id="m-plain" type="button">Plain</button>
+      <button id="m-e2ee" type="button">E2EE</button>
+      <button id="reconnect" type="button" hidden>Reconnect</button>
+    </div>
     <div id="fp" class="fp" hidden></div>
     <div id="alarm" class="alarm" hidden>
       <div id="alarm-text"></div>
@@ -62,117 +90,124 @@
   <div id="log"></div>
   <form id="f">
     <input id="t" autocomplete="off" placeholder="Type a message…" autofocus>
-    <button id="send">Send</button>
+    <button class="send" id="send" type="submit">Send</button>
   </form>
 </div>
 <script>
-  const log = document.getElementById('log');
-  const status = document.getElementById('status');
-  const form = document.getElementById('f');
-  const input = document.getElementById('t');
-  const sendBtn = document.getElementById('send');
-  const fp = document.getElementById('fp');
-  const alarm = document.getElementById('alarm');
-  const alarmText = document.getElementById('alarm-text');
   const peer = '__PEER__';
-  const mode = '__MODE__';
+  const el = (id) => document.getElementById(id);
+  const log = el('log'), status = el('status'), pill = el('pill'), input = el('t');
+  const sendBtn = el('send'), fp = el('fp'), alarm = el('alarm'), alarmText = el('alarm-text');
+  let mode = '__MODE__';
   let ready = mode === 'plain';
-  if (mode === 'plain') {
-    status.textContent = '⚠ plain mode — messages are NOT encrypted';
-    status.className = 'plain';
+  let dividerShown = false;
+
+  function setBlocked(b) { input.disabled = b; sendBtn.disabled = b; }
+
+  function setPill(text, cls) { pill.textContent = text; pill.className = 'pill ' + (cls || ''); }
+
+  function setModeButtons() {
+    el('m-plain').classList.toggle('on', mode === 'plain');
+    el('m-e2ee').classList.toggle('on', mode === 'e2ee');
   }
 
-  function setBlocked(blocked) {
-    input.disabled = blocked;
-    sendBtn.disabled = blocked;
+  function statusLine() {
+    if (mode === 'plain') { status.textContent = '⚠ plain mode — messages are NOT encrypted';
+      status.className = 'plain'; }
+    else if (!ready) { status.textContent = 'setting up secure session…'; status.className = ''; }
   }
 
-  function showFingerprints(ev) {
-    if (!ev.my_fingerprint) return;
-    fp.hidden = false;
-    fp.innerHTML = '<span class="lbl">you:</span> ' + ev.my_fingerprint
-                 + '<br><span class="lbl">' + peer + ':</span> ' + ev.peer_fingerprint;
-  }
-
-  async function post(path, body) {
-    const r = await fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {})
-    });
-    return r.json();
-  }
-  document.getElementById('trust').addEventListener('click', () => post('/trust'));
-  document.getElementById('abort').addEventListener('click', () => post('/abort'));
-
-  function add(cls, text) {
+  function add(cls, text, earlier) {
+    if (earlier && !dividerShown) {
+      const d = document.createElement('div');
+      d.className = 'divider'; d.textContent = '— earlier messages —';
+      log.appendChild(d); dividerShown = true;
+    }
     const d = document.createElement('div');
-    d.className = 'msg ' + cls;
+    d.className = 'msg ' + cls + (earlier ? ' earlier' : '');
     d.textContent = text;
     log.appendChild(d);
     log.scrollTop = log.scrollHeight;
   }
+
+  function eventBubble(ev) {
+    const cls = ev.level === 'alarm' ? 'alarmbubble' : ev.level === 'error' ? 'err' : 'sys';
+    add(cls, ev.text, ev.earlier);
+  }
+
+  async function post(path, body) {
+    const r = await fetch(path, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    return r.json();
+  }
+  el('trust').addEventListener('click', () => post('/trust'));
+  el('abort').addEventListener('click', () => post('/abort'));
+  el('reconnect').addEventListener('click', () => post('/reconnect'));
+  el('m-plain').addEventListener('click', () => post('/mode', { mode: 'plain' }));
+  el('m-e2ee').addEventListener('click', () => post('/mode', { mode: 'e2ee' }));
 
   const es = new EventSource('/events');
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (ev.kind === 'chat') {
       add(ev.mine ? 'me' : 'them',
-          (ev.encrypted ? '🔒 ' : '') + (ev.mine ? '' : ev.from + ': ') + ev.text);
+          (ev.encrypted ? '🔒 ' : '') + (ev.mine ? '' : ev.from + ': ') + ev.text, ev.earlier);
+    } else if (ev.kind === 'event') {
+      eventBubble(ev);
     } else if (ev.kind === 'secure') {
-      showFingerprints(ev);
+      if (ev.my_fingerprint) {
+        fp.hidden = false;
+        fp.innerHTML = '<span class="lbl">you:</span> ' + ev.my_fingerprint
+                     + '<br><span class="lbl">' + peer + ':</span> ' + ev.peer_fingerprint;
+      }
       if (ev.trust === 'changed') {
-        ready = false;
-        setBlocked(true);
+        ready = false; setBlocked(true);
         status.textContent = '⚠ ' + peer + "'s key CHANGED — verify before trusting";
         status.className = 'plain';
         alarm.hidden = false;
-        alarmText.textContent = peer + "'s key has changed since last time. This could be a "
-          + 'man-in-the-middle. Compare the fingerprints above with ' + peer
-          + ' in person or by phone, then Trust or Abort.';
+        alarmText.textContent = peer + "'s key changed since last time. Compare the fingerprints "
+          + 'above with ' + peer + ' out-of-band, then Trust or Abort.';
       } else {
-        ready = true;
-        setBlocked(false);
-        const note = ev.trust === 'new' ? ' (new contact — verify the fingerprints once)' : '';
+        ready = true; setBlocked(false);
+        const note = ev.trust === 'new' ? ' (new contact — verify fingerprints once)' : '';
         status.textContent = '🔒 secure session — key ' + ev.key_hash + note;
         status.className = 'secure';
       }
     } else if (ev.kind === 'trusted') {
-      ready = true;
-      setBlocked(false);
-      alarm.hidden = true;
-      status.textContent = '🔒 ' + peer + "'s new key trusted";
-      status.className = 'secure';
-      add('sys', peer + "'s key is now trusted and pinned.");
-    } else if (ev.kind === 'system') {
-      add('sys', ev.text);
-    } else if (ev.kind === 'error') {
-      add('err', ev.text);
+      ready = true; setBlocked(false); alarm.hidden = true;
+      status.textContent = '🔒 ' + peer + "'s new key trusted"; status.className = 'secure';
+      if (!ev.earlier) add('sys', ev.text);
+    } else if (ev.kind === 'status') {
+      mode = ev.mode; setModeButtons();
+      el('reconnect').hidden = ev.state !== 'aborted';
+      if (ev.state === 'connected') { setPill(mode === 'plain' ? 'plain' : 'connected',
+          mode === 'plain' ? 'warn' : 'ok'); setBlocked(false); statusLine(); }
+      else if (ev.state === 'reconnecting') { setPill('reconnecting…', 'warn'); setBlocked(true); }
+      else if (ev.state === 'switching') { setPill('switching…', 'warn'); setBlocked(true); }
+      else if (ev.state === 'aborted') { setPill('aborted', 'bad'); setBlocked(true);
+        alarm.hidden = true; status.textContent = 'session aborted'; status.className = ''; }
     }
   };
-  es.onopen = () => {
-    if (!ready && mode === 'e2ee') status.textContent = 'setting up secure session…';
-  };
+  es.onopen = () => setPill('connected', 'ok');
 
-  form.addEventListener('submit', async (e) => {
+  el('f').addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = input.value;
     if (!text.trim()) return;
     input.value = '';
-    const r = await fetch('/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-    const res = await r.json();
-    if (!res.ok && res.reason === 'not_ready') {
+    const res = await post('/send', { text });
+    if (!res.ok && res.reason === 'not_ready')
       add('sys', 'still setting up the secure session — try again in a moment');
-    } else if (!res.ok && res.reason === 'key_changed') {
+    else if (!res.ok && res.reason === 'key_changed')
       add('err', peer + "'s key changed — Trust it or Abort before sending");
-    } else if (!res.ok) {
+    else if (!res.ok && res.reason === 'offline')
+      add('sys', 'reconnecting — try again in a moment');
+    else if (!res.ok)
       add('err', 'could not send (' + (res.reason || 'error') + ')');
-    }
   });
+
+  setModeButtons();
+  statusLine();
 </script>
 </body>
 </html>

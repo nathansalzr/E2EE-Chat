@@ -37,24 +37,9 @@ def _wait_port(port: int, timeout: float = 3.0) -> None:
 
 def _start_mitm(listen_port: int, server_port: int, log_file: str) -> socket.socket:
     """Start the MITM accept loop on a background thread; return the listener."""
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", listen_port))
-    listener.listen()
-
-    def accept_loop():
-        while True:
-            try:
-                client_sock, _ = listener.accept()
-            except OSError:
-                return
-            threading.Thread(
-                target=mitm.handle_client,
-                args=(client_sock, "127.0.0.1", server_port, log_file),
-                daemon=True,
-            ).start()
-
-    threading.Thread(target=accept_loop, daemon=True).start()
+    listener, _ = mitm.start_listener(
+        "127.0.0.1", listen_port, "127.0.0.1", server_port, log_file, mode="log"
+    )
     return listener
 
 
@@ -102,25 +87,9 @@ import queue  # noqa: E402
 
 
 def _start_mitm_mode(listen_port, server_port, log_file, mode):
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", listen_port))
-    listener.listen()
-    swapper = mitm.KeySwapper() if mode == "swap-keys" else None
-
-    def accept_loop():
-        while True:
-            try:
-                client_sock, _ = listener.accept()
-            except OSError:
-                return
-            threading.Thread(
-                target=mitm.handle_client,
-                args=(client_sock, "127.0.0.1", server_port, log_file, mode, swapper),
-                daemon=True,
-            ).start()
-
-    threading.Thread(target=accept_loop, daemon=True).start()
+    listener, _ = mitm.start_listener(
+        "127.0.0.1", listen_port, "127.0.0.1", server_port, log_file, mode=mode
+    )
     return listener
 
 
@@ -315,3 +284,152 @@ def test_swapper_tolerates_non_string_usernames():
         "key": "AAAA",
     }  # non-string sender: forwarded unchanged
     sw.note_pubkey(["not", "a", "str"], "AAAA")  # must not raise / not stored
+
+
+# --- web console: live mode switching, off mode (web demo) ----------------
+
+
+def test_off_mode_writes_no_log(tmp_path):
+    server_port, mitm_port = _free_port(), _free_port()
+    log_file = str(tmp_path / "intercepted.log")
+    server = ChatServer(port=server_port)
+    server.start()
+    _wait_port(server_port)
+    listener, state = mitm.start_listener(
+        "127.0.0.1", mitm_port, "127.0.0.1", server_port, log_file, mode="off"
+    )
+    _wait_port(mitm_port)
+    inbox: queue.Queue = queue.Queue()
+    bob = ChatClient("127.0.0.1", mitm_port, "bob", inbox.put, mode="plain")
+    alice = ChatClient("127.0.0.1", mitm_port, "alice", lambda m: None, peer="bob", mode="plain")
+    bob.connect()
+    alice.connect()
+    try:
+        alice.send_chat("bob", "quiet please")
+        assert _next(inbox, "chat")["text"] == "quiet please"  # still relayed
+    finally:
+        alice.close()
+        bob.close()
+        listener.close()
+        server.stop()
+    import os
+
+    assert not os.path.exists(log_file)  # off mode records nothing
+
+
+def test_set_mode_takes_effect_live(tmp_path):
+    server_port, mitm_port = _free_port(), _free_port()
+    log_file = str(tmp_path / "intercepted.log")
+    server = ChatServer(port=server_port)
+    server.start()
+    _wait_port(server_port)
+    listener, state = mitm.start_listener(
+        "127.0.0.1", mitm_port, "127.0.0.1", server_port, log_file, mode="off"
+    )
+    _wait_port(mitm_port)
+    inbox: queue.Queue = queue.Queue()
+    bob = ChatClient("127.0.0.1", mitm_port, "bob", inbox.put, mode="plain")
+    alice = ChatClient("127.0.0.1", mitm_port, "alice", lambda m: None, peer="bob", mode="plain")
+    bob.connect()
+    alice.connect()
+    try:
+        alice.send_chat("bob", "before logging")
+        _next(inbox, "chat")
+        state.set_mode("log")  # flip to logging mid-session, no restart
+        alice.send_chat("bob", "after logging")
+        _next(inbox, "chat")
+    finally:
+        alice.close()
+        bob.close()
+        listener.close()
+        server.stop()
+    log = open(log_file, encoding="utf-8").read()
+    assert "after logging" in log and "before logging" not in log
+
+
+def test_switch_to_swap_keys_drops_connections(tmp_path):
+    # Switching to swap-keys resets live connections so clients reconnect and
+    # redo the handshake through the attack (that's when the alarm would fire).
+    server_port, mitm_port = _free_port(), _free_port()
+    server = ChatServer(port=server_port)
+    server.start()
+    _wait_port(server_port)
+    listener, state = mitm.start_listener(
+        "127.0.0.1", mitm_port, "127.0.0.1", server_port, str(tmp_path / "l.log"), mode="log"
+    )
+    _wait_port(mitm_port)
+    gone = threading.Event()
+    alice = ChatClient(
+        "127.0.0.1",
+        mitm_port,
+        "alice",
+        lambda m: gone.set() if m.get("type") == "disconnected" else None,
+        peer="bob",
+        keys_dir=str(tmp_path),
+    )
+    alice.connect()
+    time.sleep(0.3)
+    try:
+        state.set_mode("swap-keys")  # should drop alice's live connection
+        assert gone.wait(3), "client was not dropped on the swap-keys switch"
+    finally:
+        alice.close()
+        listener.close()
+        server.stop()
+
+
+def test_cli_mitm_relays_every_client(tmp_path):
+    # Regression: main() used to run a second accept() loop that stole and
+    # silently dropped about half the connections.
+    import os
+    import subprocess
+    import sys
+
+    server_port, mitm_port = _free_port(), _free_port()
+    server = ChatServer(port=server_port)
+    server.start()
+    _wait_port(server_port)
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "e2ee_chat.mitm",
+            "--port",
+            str(mitm_port),
+            "--server-port",
+            str(server_port),
+            "--log-file",
+            str(tmp_path / "m.log"),
+        ],
+        cwd=str(tmp_path),
+        env={**os.environ, "PYTHONPATH": repo},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    clients = []
+    try:
+        _wait_port(mitm_port, timeout=10)
+        for i in range(6):
+            c = ChatClient("127.0.0.1", mitm_port, f"user{i}", lambda m: None, mode="plain")
+            c.connect()  # raises ConnectionError if the MITM dropped us
+            clients.append(c)
+        assert len(clients) == 6
+    finally:
+        for c in clients:
+            c.close()
+        proc.terminate()
+        proc.wait(5)
+        server.stop()
+
+
+def test_mitm_will_not_share_a_busy_port(tmp_path):
+    squatter = socket.socket()
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen()
+    port = squatter.getsockname()[1]
+    try:
+        with pytest.raises(OSError):
+            mitm.start_listener("127.0.0.1", port, "127.0.0.1", 1, str(tmp_path / "x.log"))
+    finally:
+        squatter.close()
