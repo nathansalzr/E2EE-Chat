@@ -76,10 +76,24 @@ def test_busy_port_fails_loudly_and_releases_what_started(tmp_path, monkeypatch)
         with pytest.raises(demo.PortInUse) as err:
             demo.launch(keys_dir=str(tmp_path / "keys"), log_file=str(tmp_path / "x.log"))
         assert err.value.port == demo.MITM_PORT
-        # the relay server that started first was shut down again
-        _hold(demo.SERVER_PORT).close()
+        # The relay server that started first was shut down again. On Linux the
+        # port frees once the server's accept() poll returns (up to 0.5 s), so
+        # allow a short window instead of re-binding instantly.
+        assert _port_frees_up(demo.SERVER_PORT, within=3.0)
     finally:
         squatter.close()
+
+
+def _port_frees_up(port, within):
+    end = time.time() + within
+    while True:
+        try:
+            _hold(port).close()
+            return True
+        except OSError:
+            if time.time() > end:
+                return False
+            time.sleep(0.1)
 
 
 def test_main_names_the_busy_port(tmp_path, monkeypatch, capsys):
