@@ -9,6 +9,48 @@ The narrated video version is [`demo-script.md`](demo-script.md); the threat mod
 
 > **Ethics:** every attack here runs only against our own app on our own machines (localhost). Never point `mitm.py` at anyone else's traffic.
 
+## Two ways to run it
+
+- **Web console (recommended for the live demo):** one command opens three browser tabs — an attacker dashboard and the two chat windows — and you drive the whole story by clicking, with no restarts. See the next section. Design notes: [`web-demo-walkthrough.md`](web-demo-walkthrough.md).
+- **Terminal (the backup, and the evidence source):** four terminals running the programs directly. This is the rest of this guide, from "Setup" onward. Use it for the Wireshark captures and log screenshots.
+
+## Web console: one command, no restarts
+
+```powershell
+cd C:\Users\owner\Projects\school\E2EE-Chat
+```
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+```powershell
+python -m e2ee_chat.demo --reset
+```
+
+It prints three local URLs and opens the attacker dashboard. `--reset` clears trust-on-first-use pins and saved history so Step 7 starts as a fresh contact (your keypairs are kept, so fingerprints stay stable). Ctrl+C in the terminal stops everything.
+
+| Tab | URL | What it does |
+|---|---|---|
+| Attacker dashboard | http://127.0.0.1:8000/ | Buttons: **Off / Listen / Tamper / Swap keys**, and a live colour-coded feed of intercepted traffic |
+| Alice | http://127.0.0.1:8001/ | Alice's chat window, with a **Plain / E2EE** toggle |
+| Bob | http://127.0.0.1:8002/ | Bob's chat window |
+
+**Run the story by clicking (no restarts):**
+1. Dashboard on **Off**. Type in Alice — it reaches Bob. Nothing is logged.
+2. Dashboard → **Listen**. Send again: the feed shows the text in red (readable).
+3. Both windows → **E2EE** (the mode toggle). Send: the feed now shows only grey ciphertext.
+4. Dashboard → **Tamper**. Send: Bob's window shows a red "failed integrity check" bubble.
+5. Bob's window → **Plain**. Alice shows the downgrade warning. Put Bob back to E2EE.
+6. Dashboard → **Listen**, send a message (this pins each side's real key), then → **Swap keys**. Both windows auto-reconnect, and a **"key CHANGED" bubble appears in the conversation**; sending is blocked; compare the fingerprints shown, then **Trust** or **Abort**.
+7. Refresh a window: the saved conversation, including the key-change bubble, is still there.
+
+If a page looks stuck, check the connection pill at the top (connected / reconnecting / aborted). If the dashboard feed stays empty while chat works, or the windows hang on "switching…", a server or terminal MITM from an earlier run is probably still running. Stop every leftover E2EE Chat process and relaunch:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object CommandLine -match 'e2ee_chat' | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+(The demo now refuses to start if one of its ports is taken, so this should only bite older runs.) The terminal steps below remain the fallback and are what you use for Wireshark and the saved-log evidence.
+
 ## The one-sentence pitch
 
 > A plaintext chat can be read and changed by anyone in the network path. We prove it, then add end-to-end encryption so the same attacker sees only noise and gets caught if they tamper. Signal, WhatsApp, iMessage and SSH solve the same problem the same way.

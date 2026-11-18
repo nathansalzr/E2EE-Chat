@@ -186,7 +186,15 @@ This is the model behind Signal's safety numbers, WhatsApp's security code, and 
 
 ## Demo for class
 
-The step-by-step live demo, covering every command, what the audience should see, and the real-world attack each step maps to, is in [`docs/demo-guide.md`](docs/demo-guide.md). The narrated video script is [`docs/demo-script.md`](docs/demo-script.md).
+For the live demo, one command runs the whole project in the browser — an attacker dashboard plus two chat windows — and you drive the attack-and-defense story by clicking, with no restarts:
+
+```bash
+python -m e2ee_chat.demo --reset
+```
+
+It opens an attacker dashboard (switch Off / Listen / Tamper / Swap keys live) and Alice's and Bob's windows (each with a Plain / E2EE toggle). The windows auto-reconnect and keep a saved, encrypted-at-rest conversation, so a "key changed" alarm shows inline against earlier messages like a real messaging app. Design notes: [`docs/web-demo-walkthrough.md`](docs/web-demo-walkthrough.md).
+
+The step-by-step runbook (both the web console and the terminal fallback used for Wireshark/log evidence), with what the audience should see and the real-world attack each step maps to, is in [`docs/demo-guide.md`](docs/demo-guide.md). The narrated video script is [`docs/demo-script.md`](docs/demo-script.md).
 
 ## Running the checks (same as CI)
 
