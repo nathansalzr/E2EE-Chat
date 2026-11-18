@@ -5,7 +5,7 @@ A shot-by-shot script for the recorded demo (and the live office-hours demo). It
 - **Target length:** 10–12 minutes of demo + ~5 minutes Q&A (US-10 AC1).
 - **Every member speaks** (US-10 AC1/AC4). Speaker tags below are placeholders — assign real names.
 - **Record a backup video** (US-10 AC2) even if you also demo live.
-- **Companion:** the storyline and threat model are in [`security-story.md`](security-story.md); the stage/command table is in [`ROADMAP.md`](ROADMAP.md).
+- **Companion:** the step-by-step commands, expected output and real-world cases are in [`demo-guide.md`](demo-guide.md). The storyline and threat model are in [`security-story.md`](security-story.md), and the stage/command table is in [`ROADMAP.md`](ROADMAP.md).
 
 ## What you can record *today* vs. later
 
@@ -20,7 +20,7 @@ A shot-by-shot script for the recorded demo (and the live office-hours demo). It
 | 7 Fingerprints catch it (US-7) | `/fingerprint`, `/abort` | ⏳ after UC-5 |
 | 8 CIA wrap + conclusion | slide | ✅ |
 
-> Record scenes 1–3 and 8 now to lock in the UC-2 milestone; add 4–7 as each use case lands. Shooting in this order also lets each stage reuse the same window layout.
+> Scenes 1–5 and 8 can be recorded now. Add 6–7b when UC-5 lands. Shooting in this order also lets each stage reuse the same window layout.
 
 ## Standard setup (use the same layout in every scene)
 
@@ -82,7 +82,7 @@ Arrange terminals so the camera tells the story left-to-right:
 
 ## Scene 4 — Encryption defeats the same attack (UC-4)  *(~2 min)*  — Speaker: Crypto lead
 - **Screen-record:** the **same** MITM still running, clients restarted in `--mode e2ee`, chat, then back to `intercepted.log` / Wireshark showing gibberish.
-- **On-screen action (planned):**
+- **On-screen action:**
   ```
   python -m e2ee_chat.client --port 6060 --user alice --peer bob --mode e2ee
   python -m e2ee_chat.client --port 6060 --user bob --peer alice --mode e2ee
@@ -94,7 +94,7 @@ Arrange terminals so the camera tells the story left-to-right:
 
 ## Scene 5 — Tampering is caught (US-6)  *(~1.5 min)*  — Speaker: Attack lead
 - **Screen-record:** attacker in tamper mode; Bob's client rejecting the altered message.
-- **On-screen action (planned):**
+- **On-screen action:**
   ```
   python -m e2ee_chat.mitm --mode tamper
   # the SENDING client must connect through port 6060 (tampering happens on its way in)
@@ -145,4 +145,4 @@ Arrange terminals so the camera tells the story left-to-right:
 - [ ] Captions or a lower-third naming the current use case, for the grader.
 - [ ] Export a backup copy; store it with the evidence, not only on one laptop (US-10 AC2).
 
-*Status: scenes 1–3 and 8 are recordable against the current `v0.2-attack` build. Scenes 4–7 become recordable as UC-4 and UC-5 are implemented.*
+*Status: scenes 1–5 and 8 are recordable against the `v0.3-e2ee` build. Scenes 6–7b become recordable once UC-5 is implemented.*

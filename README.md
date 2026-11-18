@@ -172,6 +172,10 @@ and reconnect both clients. Every encrypted message now has one bit flipped on t
 
 The web UI takes the same `--mode e2ee|plain` flag and shows a 🔒 on encrypted messages. Full write-up: [`docs/uc4-walkthrough.md`](docs/uc4-walkthrough.md).
 
+## Demo for class
+
+The step-by-step live demo, covering every command, what the audience should see, and the real-world attack each step maps to, is in [`docs/demo-guide.md`](docs/demo-guide.md). The narrated video script is [`docs/demo-script.md`](docs/demo-script.md).
+
 ## Running the checks (same as CI)
 
 ```bash
