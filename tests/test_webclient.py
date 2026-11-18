@@ -39,3 +39,35 @@ def test_new_subscriber_replays_history():
     app.on_message({"type": "chat", "from": "bob", "text": "earlier"})
     q = app.subscribe()  # opened a tab after the message arrived
     assert q.get(timeout=1) == {"kind": "chat", "from": "bob", "text": "earlier"}
+
+
+# --- UC-4 events -----------------------------------------------------------
+
+
+def test_encrypted_chat_keeps_the_lock_marker():
+    app = ChatApp("alice", "bob")
+    q = app.subscribe()
+    app.on_message({"type": "chat", "from": "bob", "text": "hi", "encrypted": True})
+    assert q.get(timeout=1) == {"kind": "chat", "from": "bob", "text": "hi", "encrypted": True}
+
+
+def test_integrity_and_downgrade_become_warnings():
+    app = ChatApp("alice", "bob")
+    q = app.subscribe()
+    app.on_message({"type": "integrity_error", "from": "bob"})
+    app.on_message({"type": "downgrade_rejected", "from": "bob"})
+    first, second = q.get(timeout=1), q.get(timeout=1)
+    assert first["kind"] == "error" and "integrity check" in first["text"]
+    assert second["kind"] == "error" and "downgrade" in second["text"]
+
+
+def test_plain_mode_is_ready_immediately():
+    assert ChatApp("alice", "bob", mode="plain").ready is True
+    assert ChatApp("alice", "bob").ready is False
+
+
+def test_plain_mode_never_shows_the_lock():
+    app = ChatApp("alice", "bob", mode="plain")
+    q = app.subscribe()
+    app.on_message({"type": "chat", "from": "bob", "text": "hi", "encrypted": True})
+    assert "encrypted" not in q.get(timeout=1)

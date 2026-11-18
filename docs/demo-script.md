@@ -14,8 +14,8 @@ A shot-by-shot script for the recorded demo (and the live office-hours demo). It
 | 1 Intro | slide/title | ✅ |
 | 2 Plaintext chat (UC-1) | server + 2 clients | ✅ |
 | 3 The attack (UC-2) | `mitm --mode log` + Wireshark | ✅ (`v0.2-attack`) |
-| 4 Encryption defeats it (UC-4) | `client --mode e2ee` | ⏳ after UC-4 |
-| 5 Tamper is caught (US-6) | `mitm --mode tamper` | ⏳ after UC-4 |
+| 4 Encryption defeats it (UC-4) | `client --mode e2ee` | ✅ (`v0.3-e2ee`) |
+| 5 Tamper is caught (US-6) | `mitm --mode tamper` | ✅ (`v0.3-e2ee`) |
 | 6 Key-swap beats naive E2EE (US-7) | `mitm --mode swap-keys` | ⏳ after UC-5 |
 | 7 Fingerprints catch it (US-7) | `/fingerprint`, `/abort` | ⏳ after UC-5 |
 | 8 CIA wrap + conclusion | slide | ✅ |
@@ -59,8 +59,8 @@ Arrange terminals so the camera tells the story left-to-right:
 - **On-screen action:**
   ```
   python -m e2ee_chat.server
-  python -m e2ee_chat.client --user alice --peer bob
-  python -m e2ee_chat.client --user bob --peer alice
+  python -m e2ee_chat.client --mode plain --user alice --peer bob
+  python -m e2ee_chat.client --mode plain --user bob --peer alice
   ```
   Alice types `Hi Bob`, Bob replies. Point out the **server window**: it logs `alice -> bob (chat)` but never the text.
 - **Narration:**
@@ -72,15 +72,15 @@ Arrange terminals so the camera tells the story left-to-right:
 - **On-screen action:**
   ```
   python -m e2ee_chat.mitm --mode log
-  python -m e2ee_chat.client --port 6060 --user alice --peer bob
-  python -m e2ee_chat.client --port 6060 --user bob --peer alice
+  python -m e2ee_chat.client --port 6060 --mode plain --user alice --peer bob
+  python -m e2ee_chat.client --port 6060 --mode plain --user bob --peer alice
   ```
   Alice types the memorable line (`Transfer $5000 to account 8891`). Show the attacker terminal printing it live; open `intercepted.log`; switch to Wireshark → right-click a packet → **Follow → TCP Stream** → the message is in the clear.
 - **Narration:**
   > "Now the clients connect through our attacker on port 6060 — exactly the position ARP or DNS spoofing would give a real attacker, without the victims noticing. The chat still works, so nobody suspects a thing. But watch: every message lands in `intercepted.log` in plain text, and Wireshark shows the same words sitting right in the packet. No confidentiality at all."
 - **CIA callout (on screen):** ✗ Confidentiality broken.
 
-## Scene 4 — Encryption defeats the same attack (UC-4)  *(~2 min)*  — Speaker: Crypto lead  ⏳
+## Scene 4 — Encryption defeats the same attack (UC-4)  *(~2 min)*  — Speaker: Crypto lead
 - **Screen-record:** the **same** MITM still running, clients restarted in `--mode e2ee`, chat, then back to `intercepted.log` / Wireshark showing gibberish.
 - **On-screen action (planned):**
   ```
@@ -92,11 +92,12 @@ Arrange terminals so the camera tells the story left-to-right:
   > "Same attacker, same wiretap — we changed nothing on the attacker's side. The clients now do an X25519 key exchange and encrypt with AES-256-GCM. The attacker's log is now meaningless base64, and Wireshark shows no readable words. The private keys never left either machine. That's **confidentiality**."
 - **CIA callout:** ✓ Confidentiality restored.
 
-## Scene 5 — Tampering is caught (US-6)  *(~1.5 min)*  — Speaker: Attack lead  ⏳
+## Scene 5 — Tampering is caught (US-6)  *(~1.5 min)*  — Speaker: Attack lead
 - **Screen-record:** attacker in tamper mode; Bob's client rejecting the altered message.
 - **On-screen action (planned):**
   ```
   python -m e2ee_chat.mitm --mode tamper
+  # the SENDING client must connect through port 6060 (tampering happens on its way in)
   ```
   Alice sends a message; the MITM flips one byte; Bob's window shows `message failed integrity check` and does **not** display it.
 - **Narration:**

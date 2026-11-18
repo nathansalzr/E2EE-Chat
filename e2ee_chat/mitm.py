@@ -1,16 +1,22 @@
-"""mitm.py — a man-in-the-middle that sits between a client and the server (UC-2).
+"""mitm.py — a man-in-the-middle that sits between a client and the server (UC-2, UC-4).
 
 It listens where clients expect the server, forwards every message to the real
 server so the chat still works, and logs a copy of each one to intercepted.log.
-In the plaintext build the log is readable; after E2EE it will be ciphertext.
+In plain mode the log is readable; in e2ee mode it is only base64 ciphertext.
 
-Run it with:  python -m e2ee_chat.mitm [--mode log] [--port 6060]
+Modes:
+  log     forward and record every message (UC-2; re-run against e2ee in UC-4)
+  tamper  also flip one byte of every encrypted message's ciphertext (US-6)
+
+Run it with:  python -m e2ee_chat.mitm [--mode log|tamper] [--port 6060]
               [--server-host 127.0.0.1] [--server-port 5050]
 
 Attack code, for our own app on our own machines only.
 """
 
 import argparse
+import base64
+import binascii
 import socket
 import threading
 from datetime import datetime
@@ -28,6 +34,12 @@ LISTEN_PORT = 6060  # where clients connect, thinking it's the server
 SERVER_HOST = "127.0.0.1"  # the real server
 SERVER_PORT = 5050  # the real server's port
 LOG_FILE = "intercepted.log"
+MODES = ("log", "tamper")
+
+# Tampering happens on the way IN to the server only. When both clients sit
+# behind this MITM, every message passes through it twice (sender->server and
+# server->recipient); flipping the same bit both times would undo the change.
+TAMPER_DIRECTION = "client->server"
 
 # One lock shared by every thread so two directions never interleave a log line.
 _log_lock = threading.Lock()
@@ -46,7 +58,26 @@ def log_message(log_file, direction, msg):
             f.write(line + "\n")
 
 
-def pump(source, destination, direction, log_file):
+def tamper(msg):
+    """Return a copy of an encrypted message with one ciphertext byte flipped.
+
+    The attacker can't read the ciphertext, but it can still change it. AES-GCM's
+    authentication tag is what lets the recipient notice (US-6). Anything that
+    isn't a well-formed encrypted message is returned unchanged.
+    """
+    if msg.get("type") != "encrypted" or not isinstance(msg.get("ciphertext"), str):
+        return msg
+    try:
+        raw = bytearray(base64.b64decode(msg["ciphertext"], validate=True))
+    except (binascii.Error, ValueError):
+        return msg
+    if not raw:
+        return msg
+    raw[0] ^= 0x01  # flip a single bit of the first ciphertext byte
+    return {**msg, "ciphertext": base64.b64encode(bytes(raw)).decode("ascii")}
+
+
+def pump(source, destination, direction, log_file, mode="log"):
     """Read messages from source, log them, and pass them to destination.
 
     Runs until one side hangs up or the stream breaks. One pump handles one
@@ -60,6 +91,11 @@ def pump(source, destination, direction, log_file):
             if msg is None:  # the other side closed cleanly
                 break
             log_message(log_file, direction, msg)
+            if mode == "tamper" and direction == TAMPER_DIRECTION:
+                altered = tamper(msg)
+                if altered is not msg:
+                    log_message(log_file, f"{direction} TAMPERED", altered)
+                    msg = altered
             send_msg(destination, msg)
     except (OSError, ProtocolError, BadMessage):
         # A reset connection, a half-closed socket, or a malformed frame.
@@ -67,7 +103,7 @@ def pump(source, destination, direction, log_file):
         pass
 
 
-def handle_client(client_sock, server_host, server_port, log_file):
+def handle_client(client_sock, server_host, server_port, log_file, mode="log"):
     """One client connected to us. Connect to the real server and relay both ways."""
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -81,11 +117,11 @@ def handle_client(client_sock, server_host, server_port, log_file):
     # Forward client->server in the background; server->client in this thread.
     up = threading.Thread(
         target=pump,
-        args=(client_sock, server_sock, "client->server", log_file),
+        args=(client_sock, server_sock, "client->server", log_file, mode),
         daemon=True,
     )
     up.start()
-    pump(server_sock, client_sock, "server->client", log_file)
+    pump(server_sock, client_sock, "server->client", log_file, mode)
 
     # When either direction ends, close both sockets. Closing them makes the
     # other pump's blocked recv return, so no thread or socket is left dangling
@@ -99,7 +135,7 @@ def handle_client(client_sock, server_host, server_port, log_file):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="E2EE Chat man-in-the-middle (UC-2)")
+    parser = argparse.ArgumentParser(description="E2EE Chat man-in-the-middle (UC-2, UC-4)")
     parser.add_argument("--host", default=LISTEN_HOST, help="address to listen on")
     parser.add_argument(
         "--port",
@@ -113,9 +149,10 @@ def main(argv=None):
     )
     parser.add_argument(
         "--mode",
-        choices=["log"],
+        choices=MODES,
         default="log",
-        help="log: forward and record every message (tamper/swap-keys come later)",
+        help="log: forward and record every message; "
+        "tamper: also flip one byte of each encrypted message (swap-keys comes in UC-5)",
     )
     parser.add_argument("--log-file", default=LOG_FILE, help="where to write intercepted traffic")
     args = parser.parse_args(argv)
@@ -135,7 +172,7 @@ def main(argv=None):
             print(f"[mitm] client connected from {addr}")
             threading.Thread(
                 target=handle_client,
-                args=(client_sock, args.server_host, args.server_port, args.log_file),
+                args=(client_sock, args.server_host, args.server_port, args.log_file, args.mode),
                 daemon=True,
             ).start()
     except KeyboardInterrupt:

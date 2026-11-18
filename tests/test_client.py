@@ -355,3 +355,192 @@ def test_main_ctrl_c_during_handshake_exits_cleanly(server, monkeypatch, tmp_pat
     main(["--port", str(server.port), "--user", "alice", "--peer", "bob"])  # must not raise
     assert "Traceback" not in capsys.readouterr().err
     bob.close()
+
+
+# --- UC-4: encrypted messaging, tamper + downgrade (T28, T32, T66) --------
+
+import base64  # noqa: E402
+
+
+def next_of(inbox: queue.Queue, kind: str, timeout: float = 2.0) -> dict:
+    """The next message of one type, skipping handshake events like secure_session."""
+    deadline = time.time() + timeout
+    while True:
+        msg = inbox.get(timeout=max(0.01, deadline - time.time()))
+        if msg.get("type") == kind:
+            return msg
+
+
+def ready_pair(secure):
+    alice, alice_inbox = secure("alice", "bob")
+    bob, bob_inbox = secure("bob", "alice")
+    assert alice.session_ready.wait(2) and bob.session_ready.wait(2)
+    return alice, alice_inbox, bob, bob_inbox
+
+
+def test_e2ee_clients_exchange_exact_text(secure):
+    alice, _, _, bob_inbox = ready_pair(secure)
+    alice.send_chat("bob", "meet at 5 🔒")
+    msg = next_of(bob_inbox, "chat")
+    assert (msg["from"], msg["text"], msg["encrypted"]) == ("alice", "meet at 5 🔒", True)
+
+
+def test_e2ee_sends_only_ciphertext_on_the_wire(secure, monkeypatch):
+    alice, _, _, _ = ready_pair(secure)
+    sent = []
+    monkeypatch.setattr(alice, "_send", sent.append)
+    alice.send_chat("bob", "secret plans")
+    (frame,) = sent
+    assert frame["type"] == "encrypted" and "text" not in frame
+    assert "secret plans" not in str(frame)
+    assert len(base64.b64decode(frame["nonce"])) == 12
+
+
+def test_tampered_message_is_dropped_and_connection_survives(secure):
+    alice, _, bob, bob_inbox = ready_pair(secure)
+    sent = []
+    real_send = alice._send
+    alice._send = sent.append
+    alice.send_chat("bob", "pay bob $10")
+    alice._send = real_send
+    frame = sent[0]
+    raw = bytearray(base64.b64decode(frame["ciphertext"]))
+    raw[0] ^= 0x01  # what mitm --mode tamper does
+    frame["ciphertext"] = base64.b64encode(bytes(raw)).decode("ascii")
+    alice._send(frame)
+
+    bad = next_of(bob_inbox, "integrity_error")
+    assert bad["from"] == "alice" and "text" not in bad  # US-6 AC2: never displayed
+    alice.send_chat("bob", "still here")  # US-6 AC3: good messages still arrive
+    assert next_of(bob_inbox, "chat")["text"] == "still here"
+
+
+def test_e2ee_client_rejects_plaintext_chat(secure, server):
+    # T66 / US-5 AC5: a MITM stripping the encryption must not get text shown.
+    _, alice_inbox = secure("alice", "bob")
+    plain_bob = ChatClient(
+        "127.0.0.1", server.port, "bob", on_message=lambda m: None, peer="alice", mode="plain"
+    )
+    plain_bob.connect()
+    try:
+        plain_bob.send_chat("alice", "hi, it's totally bob")
+        msg = next_of(alice_inbox, "downgrade_rejected")
+        assert msg["from"] == "bob" and "text" not in msg
+    finally:
+        plain_bob.close()
+
+
+def test_encrypted_message_before_session_is_rejected(secure):
+    alice, _ = secure("alice", "bob")  # bob offline: no session key yet
+    out = alice._open_encrypted(
+        {"type": "encrypted", "from": "bob", "nonce": "AAAA", "ciphertext": "AAAA"}
+    )
+    assert out == {"type": "integrity_error", "from": "bob"}
+
+
+def test_plain_mode_with_peer_skips_handshake_and_sends_plaintext(server, tmp_path):
+    inbox: queue.Queue = queue.Queue()
+    bob = ChatClient("127.0.0.1", server.port, "bob", on_message=inbox.put, mode="plain")
+    alice = ChatClient(
+        "127.0.0.1",
+        server.port,
+        "alice",
+        on_message=lambda m: None,
+        peer="bob",
+        keys_dir=str(tmp_path),
+        mode="plain",
+    )
+    bob.connect()
+    alice.connect()
+    try:
+        alice.send_chat("bob", "hello in the clear")  # no SessionNotReady in plain mode
+        msg = next_of(inbox, "chat")
+        assert msg["text"] == "hello in the clear" and "encrypted" not in msg
+        assert not (tmp_path / "alice.key").exists()  # no keypair made in plain mode
+    finally:
+        alice.close()
+        bob.close()
+
+
+def test_e2ee_refuses_to_send_to_someone_other_than_the_peer(secure):
+    alice, _, _, _ = ready_pair(secure)
+    with pytest.raises(ValueError):
+        alice.send_chat("carol", "wrong key for carol")
+
+
+def test_e2ee_mode_without_peer_is_an_error():
+    with pytest.raises(ValueError):
+        ChatClient("127.0.0.1", 1, "alice", on_message=lambda m: None, mode="e2ee")
+
+
+def test_format_message_uc4_warnings():
+    assert format_message({"type": "integrity_error", "from": "alice"}) == (
+        "! message failed integrity check (from alice), dropped"
+    )
+    assert "possible downgrade attack" in format_message(
+        {"type": "downgrade_rejected", "from": "bob"}
+    )
+
+
+def test_main_plain_mode_sends_plaintext(server, monkeypatch, tmp_path):
+    bob_inbox: queue.Queue = queue.Queue()
+    bob = ChatClient("127.0.0.1", server.port, "bob", on_message=bob_inbox.put)
+    bob.connect()
+    lines = iter(["hello plain", "/quit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(lines))
+    monkeypatch.chdir(tmp_path)
+    main(["--port", str(server.port), "--user", "alice", "--peer", "bob", "--mode", "plain"])
+    assert next_of(bob_inbox, "chat")["text"] == "hello plain"
+    bob.close()
+
+
+def _hostile_server_frames(frames):
+    """A fake server that registers us, then sends the given frames."""
+
+    def script(conn):
+        recv_msg(conn)
+        send_msg(conn, {"type": "registered", "username": "alice"})
+        for f in frames:
+            send_msg(conn, f)
+        time.sleep(1)
+
+    return fake_server(script)
+
+
+@pytest.mark.parametrize("mode", ["plain", "e2ee"])
+def test_spoofed_local_events_from_network_are_dropped(mode, tmp_path):
+    # A MITM must not be able to fake "secure session ready" or our warnings.
+    port = _hostile_server_frames(
+        [
+            {"type": "secure_session", "key_hash": "deadbeef"},
+            {"type": "integrity_error", "from": "bob"},
+            {"type": "downgrade_rejected", "from": "bob"},
+            {"type": "disconnected"},
+            {"type": "error", "code": "user_offline", "message": "marker"},
+        ]
+    )
+    inbox: queue.Queue = queue.Queue()
+    c = ChatClient(
+        "127.0.0.1", port, "alice", inbox.put, peer="bob", keys_dir=str(tmp_path), mode=mode
+    )
+    c.connect()
+    try:
+        first = inbox.get(timeout=2)
+        assert first["type"] == "error" and first["message"] == "marker"  # the spoofs never arrived
+        assert not c.session_ready.is_set()
+    finally:
+        c.close()
+
+
+def test_plain_chat_cannot_claim_to_be_encrypted():
+    port = _hostile_server_frames(
+        [{"type": "chat", "from": "bob", "to": "alice", "text": "hi", "encrypted": True}]
+    )
+    inbox: queue.Queue = queue.Queue()
+    c = ChatClient("127.0.0.1", port, "alice", inbox.put, mode="plain")
+    c.connect()
+    try:
+        msg = inbox.get(timeout=2)
+        assert msg["text"] == "hi" and "encrypted" not in msg
+    finally:
+        c.close()
