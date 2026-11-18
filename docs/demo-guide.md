@@ -23,7 +23,7 @@ The narrated video version is [`demo-script.md`](demo-script.md); the threat mod
 
 ## Setup (do this before class)
 
-Open **four terminals** (PowerShell) and run this in each:
+Open **four terminals** (PowerShell) and run this in **each one**:
 
 ```powershell
 cd C:\Users\owner\Projects\school\E2EE-Chat
@@ -32,9 +32,18 @@ cd C:\Users\owner\Projects\school\E2EE-Chat
 .\.venv\Scripts\Activate.ps1
 ```
 
+**Check every prompt starts with `(.venv)`**, e.g. `(.venv) PS C:\Users\owner\Projects\school\E2EE-Chat>`. Activation only applies to the terminal you ran it in, so a new terminal starts without it. Without `(.venv)` you're on the system Python, and the first command fails with `ModuleNotFoundError: No module named 'cryptography'`.
+
+If activation fails with *"running scripts is disabled on this system"*, skip it and call the venv's Python directly. Replace `python` with `.\.venv\Scripts\python.exe` in every command below, e.g.:
+```powershell
+.\.venv\Scripts\python.exe -m e2ee_chat.server
+```
+Don't `pip install` into the system Python to work around this. That bypasses the pinned versions in `requirements.txt`.
+
 Arrange them: **Alice | Bob** on top, **Attacker** in the middle, **Server** at the bottom. Make the font large (≥16 pt).
 
 Checklist:
+- [ ] All four prompts show `(.venv)`.
 - [ ] On `main` with the latest pull (`git switch main`, `git pull`).
 - [ ] `python -m pytest -q` passes. This is a 10-second confidence check before going live.
 - [ ] Old logs removed: `Remove-Item intercepted*.log -ErrorAction SilentlyContinue`
@@ -298,10 +307,29 @@ In the **web UI**, the same change shows a red alarm banner with **Trust new key
 | E2EE (UC-3/4) | see only ciphertext; tampering is caught | ✓ | ✓ | ✗ |
 | + Fingerprints (UC-5) | can't swap keys unnoticed | ✓ | ✓ | ✓ |
 
+## Troubleshooting (fix it live)
+
+| What you see | Cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError: No module named 'cryptography'` | This terminal isn't using the venv (no `(.venv)` in the prompt) | `.\.venv\Scripts\Activate.ps1`, or use `.\.venv\Scripts\python.exe -m …` |
+| `running scripts is disabled on this system` | PowerShell execution policy blocks `Activate.ps1` | Use `.\.venv\Scripts\python.exe -m …` instead of activating |
+| `! username_taken: bob is already connected` | A client from an earlier step is still running | `/quit` the old one, or restart the server (T1) |
+| `! cannot reach server at 127.0.0.1:5050` | The server (T1) isn't running | Start `python -m e2ee_chat.server` first |
+| Clients chat but the attacker shows nothing | Clients connected to 5050, not the attacker's port | Add `--port 6060` to both clients |
+| Tamper or swap-keys does nothing | Only one client goes through the attacker | Both clients need `--port 6060`; the sender must be behind the MITM |
+| `! secure session not established yet (is your peer online?)` | The peer isn't connected yet, or is in `--mode plain` | Start the peer in e2ee mode; it connects within a few seconds |
+| No `key has CHANGED` alarm in Step 8 | Pins were deleted, or the clean session never ran | Run the `--mode log` session first so real keys get pinned |
+| Unexpected `CHANGED` alarm during a normal run | Old pins from a swap-keys rehearsal | `Remove-Item keys\known_peers -Recurse` |
+| Web UI buttons do nothing | Page opened from a different address than the one printed | Open the exact `http://127.0.0.1:800x/` URL the web client prints |
+| `error: unrecognized arguments: --webport` | Typo | The flag is `--web-port` |
+
 ## Reset between rehearsals
 
 ```powershell
 Remove-Item intercepted*.log -ErrorAction SilentlyContinue
 ```
+```powershell
+Remove-Item keys\known_peers -Recurse -ErrorAction SilentlyContinue
+```
 
-Ctrl+C every terminal, then restart the server. Keep `keys/` between runs so the session-key hash stays the same. Delete `keys/` only to show a fresh key being generated.
+The second command clears trust-on-first-use pins, so Step 7 starts with no trusted keys. Ctrl+C every terminal, then restart the server. Keep `keys/` between runs so the session-key hash stays the same. Delete `keys/` only to show a fresh key being generated.

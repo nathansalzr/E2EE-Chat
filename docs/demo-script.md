@@ -39,7 +39,8 @@ Arrange terminals so the camera tells the story left-to-right:
 
 **Pre-record checklist:**
 - [ ] `git checkout main && git pull` so you're on the tagged build.
-- [ ] venv active in all four terminals.
+- [ ] venv active in all four terminals: every prompt starts with `(.venv)`. If not, run `.\.venv\Scripts\Activate.ps1` in that terminal (or use `.\.venv\Scripts\python.exe -m …`). Otherwise the first command fails with `No module named 'cryptography'`. More fixes: [Troubleshooting in demo-guide.md](demo-guide.md#troubleshooting-fix-it-live).
+- [ ] Old trust pins cleared before the UC-5 scenes: `Remove-Item keys\known_peers -Recurse -ErrorAction SilentlyContinue`.
 - [ ] Font size large enough to read on screen (≥16pt); dark theme is fine.
 - [ ] Delete any old `intercepted.log` so the capture starts clean.
 - [ ] Wireshark on the loopback adapter, filter `tcp.port == 6060`, not yet recording.
